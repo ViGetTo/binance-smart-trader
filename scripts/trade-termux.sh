@@ -10,6 +10,10 @@ if [[ ! -d "$trader_project" || ! -f "$trader_project/pyproject.toml" ]]; then
     printf '%s\n' 'Каталог проекта перемещён. Повторите установку из нового каталога.' >&2
     exit 1
 fi
+# The installed command delegates to the checkout so a git pull also updates launcher logic.
+if [[ "${BASH_SOURCE[0]}" != "$trader_project/scripts/trade-termux.sh" ]]; then
+    exec bash "$trader_project/scripts/trade-termux.sh" "$@"
+fi
 trader_distro=smart-trader
 trader_guest=/opt/binance-smart-trader
 trader_python="$trader_guest/.venv-termux/bin/python"
@@ -33,6 +37,17 @@ trader_terminal() {
 }
 trader_has_session() { tmux has-session -t "=$trader_session" 2>/dev/null; }
 
+trader_install_launcher() {
+    local trader_new_launcher
+    trader_new_launcher=$(mktemp "$PREFIX/bin/.trade-update.XXXXXX")
+    {
+        printf '#!%s/bin/bash\n' "$PREFIX"
+        tail -n +2 "$trader_project/scripts/trade-termux.sh"
+    } > "$trader_new_launcher"
+    chmod 700 "$trader_new_launcher"
+    mv -f -- "$trader_new_launcher" "$PREFIX/bin/trade"
+}
+
 trader_update() {
     local trader_code=0
     local -a trader_update_args=()
@@ -41,14 +56,7 @@ trader_update() {
     proot-distro login --bind "$trader_project:$trader_guest" "$trader_distro" -- \
         "$trader_python" -u -m smart_trader.updates "${trader_update_args[@]}" || trader_code=$?
     if (( trader_code == 10 )); then
-        local trader_new_launcher
-        trader_new_launcher=$(mktemp "$PREFIX/bin/.trade-update.XXXXXX")
-        {
-            printf '#!%s/bin/bash\n' "$PREFIX"
-            tail -n +2 "$trader_project/scripts/trade-termux.sh"
-        } > "$trader_new_launcher"
-        chmod 700 "$trader_new_launcher"
-        mv -f -- "$trader_new_launcher" "$PREFIX/bin/trade"
+        trader_install_launcher
         if [[ "$trader_action" == start ]]; then
             if (( trader_open_ui )); then
                 exec env TRADER_UPDATE_CHECKED=1 bash "$trader_project/scripts/trade-termux.sh"
@@ -89,6 +97,13 @@ case "$trader_action" in
         if (( trader_open_ui )); then trader_terminal ui; fi
         ;;
     ui|stats) trader_terminal ui ;;
+    paper)
+        trader_terminal paper
+        # The selector waits for the old flat service to exit; only a leftover tmux shell may remain.
+        if trader_has_session; then tmux kill-session -t "=$trader_session"; fi
+        trader_install_launcher
+        exec bash "$trader_project/scripts/trade-termux.sh"
+        ;;
     config) trader_terminal config ;;
     status|report|doctor) trader_terminal "$trader_action" ;;
     web)
@@ -139,6 +154,7 @@ case "$trader_action" in
     help|-h|--help)
         printf '%s\n' 'trade — проверить обновления, запустить виртуальные счета и открыть CLI' \
             'trade start    — только фоновый сервис' \
+            'trade paper    — переключить пустой старый профиль на 3 PAPER-счёта и запустить' \
             'trade ui       — открыть терминальную аналитику; Q закрывает только интерфейс' \
             'trade status   — режим, heartbeat, позиции, остановка входов' \
             'trade report   — сравнение трёх PAPER-счетов: PnL, сделки, просадка, издержки' \

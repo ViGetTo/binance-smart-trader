@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import httpx
@@ -123,6 +123,7 @@ def configure_demo(console, settings):
                 return False
     profile = f"data/demo-{identity(key)}.sqlite"
     write_env(".env", {"TRADER_MODE": "DEMO", "TRADER_DB": profile, "TRADER_STRICT_DEMO": "true",
+                       "TRADER_PROFILE_SOURCE": "local",
                        "BINANCE_ENABLED": "true", "BINANCE_MARKET_DATA_ENABLED": "true", "TRADER_PAPER_LAB": "false",
                        "TRADER_DEMO_SYNC_BALANCE": "true", "TRADER_WEB_ENABLED": "false",
                        "TRADER_STRATEGY_AUTO": "true", "BINANCE_DEMO_API_KEY": key, "BINANCE_DEMO_API_SECRET": secret})
@@ -136,9 +137,52 @@ def enable_paper(settings, balance=4900):
     if not dec(balance) > 0:
         raise ValueError("Виртуальный стартовый баланс должен быть положительным")
     path = settings.db_path if settings.mode == Mode.PAPER and settings.paper_lab else "data/paper-lab.sqlite"
+    if path != settings.db_path:
+        credential_change_allowed(replace(settings, mode=Mode.PAPER, paper_lab=True, db_path=path))
     write_env(".env", {"TRADER_MODE": "PAPER", "TRADER_DB": path, "TRADER_PAPER_LAB": "true",
+                       "TRADER_PROFILE_SOURCE": "local",
                        "BINANCE_ENABLED": "false", "BINANCE_MARKET_DATA_ENABLED": "true",
                        "PAPER_INITIAL_BALANCE": str(balance)})
+
+
+def switch_to_paper(settings, *, wait_seconds=8):
+    """Explicit keyless recovery: stop a flat old profile, retain all ledgers and risk halts."""
+    from .lab import open_accounts
+    from .service import unresolved
+    root = Database(settings.db_path, settings.risk.initial_balance)
+    accounts = open_accounts(settings) if settings.paper_lab else []
+    ledgers = [root, *(db for _, db in accounts)]
+    try:
+        for db in ledgers:
+            if not db.get("kill", False):
+                db.halt("Switch to PAPER: pause entries")
+        if any(unresolved(db) for db in ledgers):
+            raise ValueError("Есть открытые позиции/заявки. Выполните trade stop и дождитесь закрытия; история сохранена")
+        for db in ledgers:
+            db.set("service_stop", True)
+        deadline = time.monotonic()+wait_seconds
+        while any(service_process_alive(db.get("service_pid")) for db in ledgers):
+            if time.monotonic() >= deadline:
+                raise ValueError("Старый сервис ещё завершается. Повторите trade paper через несколько секунд")
+            time.sleep(.2)
+    finally:
+        for db in ledgers:
+            db.close()
+    enable_paper(settings)
+    fresh = Settings.load()
+    accounts = open_accounts(fresh)
+    try:
+        for _, db in accounts:
+            # Request the normal validated resume only for an ordinary stop/migration.
+            # A Risk Manager/ledger error or manual pause must remain stopped.
+            reason = db.get("kill_reason", "")
+            ordinary_stop = reason in {"Termux user command: stop", "Switch to PAPER: pause entries"}
+            if db.get("kill", False) and ordinary_stop:
+                db.set("resume_requested", True)
+    finally:
+        for _, db in accounts:
+            db.close()
+    return fresh
 
 
 def configure_connection(console, settings):

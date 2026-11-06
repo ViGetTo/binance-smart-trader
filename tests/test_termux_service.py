@@ -145,11 +145,13 @@ session=Path(os.environ['TRADER_TEST_SESSION'])
 if name == 'tmux':
     if args[0] == 'has-session': sys.exit(0 if session.exists() else 1)
     if args[0] == 'new-session': session.touch()
+    if args[0] == 'kill-session': session.unlink(missing_ok=True)
 if name == 'proot-distro':
     if args[:2] == ['install','--help']: print('--name NAME')
     elif '/bin/true' in args: sys.exit(1)
     elif args[-1:] == ['freeze-flat'] and os.environ.get('TRADER_TEST_REFUSE_FREEZE') == '1': sys.exit(2)
     elif args[-1:] == ['stop']: session.unlink(missing_ok=True)
+    elif args[-1:] == ['paper'] and os.environ.get('TRADER_TEST_REFUSE_PAPER') == '1': sys.exit(2)
     elif 'smart_trader.updates' in args: sys.exit(int(os.environ.get('TRADER_TEST_UPDATE_EXIT', '0')))
 '''
     for command in ("pkg", "proot-distro", "tmux", "termux-wake-lock", "termux-wake-unlock", "sleep"):
@@ -244,3 +246,31 @@ def test_updated_launcher_is_reloaded_before_start(termux):
     assert result.returncode == 0, result.stderr
     assert sum("smart_trader.updates" in args for _, args in calls(termux)) == 1
     assert Path(termux[1]["PREFIX"], "bin/trade").exists()
+
+
+def test_paper_command_switches_profile_and_starts_without_config_menu(termux):
+    termux[3].touch()  # Stale tmux shell with a stopped service.
+    result = shell(termux, "trade-termux.sh", "paper")
+    assert result.returncode == 0, result.stderr
+    entries = calls(termux)
+    assert any(name == "proot-distro" and args[-1:] == ["paper"] for name, args in entries)
+    assert any(name == "tmux" and args[0] == "new-session" for name, args in entries)
+    assert not any(name == "proot-distro" and args[-1:] == ["config"] for name, args in entries)
+
+
+def test_paper_command_does_not_kill_session_if_profile_cannot_switch(termux):
+    termux[3].touch()
+    termux[1]["TRADER_TEST_REFUSE_PAPER"] = "1"
+    assert shell(termux, "trade-termux.sh", "paper").returncode == 2
+    assert not any(name == "tmux" and args[0] == "kill-session" for name, args in calls(termux))
+
+
+def test_installed_command_delegates_to_current_checkout(termux):
+    assert shell(termux, "termux-install.sh").returncode == 0
+    script = Path(termux[1]["PREFIX"], "bin/trade")
+    # Its installed copy can be old; runtime behavior must come from the checkout.
+    (termux[0]/"scripts/trade-termux.sh").write_text("#!/bin/bash\nprintf 'CURRENT-LAUNCHER\\n'\n")
+    result = subprocess.run(["bash", str(script), "status"], env=termux[1], cwd=termux[0],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0
+    assert result.stdout.strip() == "CURRENT-LAUNCHER"

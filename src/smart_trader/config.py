@@ -10,6 +10,8 @@ from dotenv import dotenv_values
 
 DEMO_URL = "https://demo-api.binance.com/api"
 PUBLIC_URL = "https://api.binance.com/api"
+PROFILE_KEYS = ("TRADER_MODE", "TRADER_DB", "TRADER_PAPER_LAB", "BINANCE_ENABLED",
+                "BINANCE_MARKET_DATA_ENABLED", "PAPER_INITIAL_BALANCE")
 
 
 class Mode(StrEnum):
@@ -168,7 +170,15 @@ class Settings:
     @classmethod
     def load(cls):
         # Do not inject dotenv values into os.environ: configuration/Telegram reloads must see edits.
-        env = {**dotenv_values(".env", interpolate=False), **os.environ}
+        local = dotenv_values(".env", interpolate=False)
+        env = {**local, **os.environ}
+        # An explicit choice in trade config must survive inherited Termux/proot variables.
+        # Recognize the PAPER choice already written by v0.3 as well as new marked profiles.
+        saved_paper = (str(local.get("TRADER_MODE", "")).upper() == "PAPER"
+                       and str(local.get("TRADER_PAPER_LAB", "")).lower() == "true"
+                       and str(local.get("BINANCE_ENABLED", "")).lower() == "false")
+        if local.get("TRADER_PROFILE_SOURCE") == "local" or saved_paper:
+            env.update({name: local[name] for name in PROFILE_KEYS if name in local})
         p = Path(env.get("TRADER_CONFIG", "config.toml"))
         raw = tomllib.loads(p.read_text("utf-8")) if p.exists() else {}
         def flag(name, default):

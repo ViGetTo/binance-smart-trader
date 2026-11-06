@@ -33,7 +33,7 @@ from .db import Database
 from .health import health_state, network_checks
 from .lab import account_status, comparison, open_accounts
 from .selection import StrategySelector
-from .setup import enable_paper, setup_wizard
+from .setup import enable_paper, setup_wizard, switch_to_paper
 
 NAMES = {"momentum": "Momentum breakout", "trend_pullback": "Trend pullback", "new_listings": "New listings"}
 
@@ -174,7 +174,7 @@ class ConfirmFlatten(ModalScreen[bool]):
 
 class TraderApp(App):
     TITLE = "BINANCE SMART TRADER"
-    SUB_TITLE = "Virtual only · Terminal v0.3"
+    SUB_TITLE = "Virtual only · Terminal v0.3.1"
     CSS = """
     Screen { background: #0b1220; color: #d9e6f2; }
     Header { background: #102132; color: #44e6c3; }
@@ -198,8 +198,10 @@ class TraderApp(App):
     BINDINGS += [("0", "tab('accounts')", "Счета"), ("b", "account('base')", "База"),
                  ("a", "account('aggressive')", "Риск"), ("t", "account('active')", "Частый")]
 
-    def __init__(self, settings=None):
+    def __init__(self, settings=None, *, watch_config=False):
         super().__init__()
+        self.watch_config = watch_config
+        self.profile_changing = False
         self.settings = settings or Settings.load()
         self.coordinator = Database(self.settings.db_path, self.settings.risk.initial_balance)
         self.accounts = open_accounts(self.settings) if self.settings.paper_lab else []
@@ -235,6 +237,11 @@ class TraderApp(App):
         yield Footer()
 
     def on_mount(self):
+        self.initialize_tables()
+        self.refresh_data()
+        self.set_interval(3, self.refresh_data)
+
+    def initialize_tables(self):
         columns = {"rejections": ("Монета", "Причина / решение"),
                    "positions-table": ("Монета", "Стратегия", "Объём", "Вход", "Сейчас", "Стоп", "Цель", "Venue"),
                    "trades-table": ("UTC", "Монета", "Стратегия", "PnL USDT", "R", "Причина", "Venue"),
@@ -246,8 +253,6 @@ class TraderApp(App):
         if self.accounts:
             self.query_one("#accounts-table", DataTable).add_columns(
                 "Счёт", "Капитал", "PnL", "%", "Закр.", "Откр.", "Max DD %", "Издержки", "Статус", "Риск %", "TF")
-        self.refresh_data()
-        self.set_interval(3, self.refresh_data)
 
     def rows(self, selector, rows):
         table = self.query_one("#"+selector, DataTable)
@@ -259,9 +264,18 @@ class TraderApp(App):
             table.move_cursor(row=min(old_cursor.row, table.row_count-1), column=old_cursor.column, animate=False)
 
     def refresh_data(self):
+        if self.profile_changing:
+            return
+        if self.watch_config:
+            fresh = Settings.load()
+            if self.profile_key(fresh) != self.profile_key(self.settings):
+                self.profile_changing = True
+                self.run_worker(self.reload_profile(fresh), group="profile", exclusive=True)
+                return
         data = snapshot(self.db, self.account_settings)
+        self.sub_title = f"{data['mode']} · Terminal v0.3.1"
         if self.accounts:
-            self.sub_title = f"PAPER · {self.account_settings.account_label} · B / A / T — выбор счёта"
+            self.sub_title = f"PAPER v0.3.1 · {self.account_settings.account_label} · B / A / T"
             self.rows("accounts-table", [(r["name"], number(r["equity"]), number(r["net_pnl"]), number(r["return_pct"]),
                                           r["report"]["trades"], r["positions"], number(r["report"]["max_drawdown"]*100),
                                           number(r["fees_total"]+r["slippage_total"]),
@@ -302,6 +316,32 @@ class TraderApp(App):
         for _, db in self.accounts:
             db.close()
         self.coordinator.close()
+
+    @staticmethod
+    def profile_key(settings):
+        return settings.mode, settings.db_path, settings.paper_lab
+
+    async def reload_profile(self, fresh):
+        self.profile_changing = True
+        try:
+            coordinator = Database(fresh.db_path, fresh.risk.initial_balance)
+            try:
+                accounts = open_accounts(fresh) if fresh.paper_lab else []
+            except BaseException:
+                coordinator.close()
+                raise
+            for _, db in self.accounts:
+                db.close()
+            self.coordinator.close()
+            self.settings, self.coordinator, self.accounts = fresh, coordinator, accounts
+            self.db = accounts[0][1] if accounts else coordinator
+            self.account_settings = accounts[0][0] if accounts else fresh
+            await self.recompose()
+            self.initialize_tables()
+        finally:
+            self.profile_changing = False
+        self.refresh_data()
+        self.notify("Профиль переключён: "+("PAPER · 3 счёта" if accounts else fresh.mode.value))
 
     def action_tab(self, name):
         if name == "accounts" and not self.accounts:
@@ -351,8 +391,8 @@ class TraderApp(App):
         with self.suspend():
             await asyncio.to_thread(setup_wizard)
         fresh = Settings.load()
-        if fresh.db_path != self.settings.db_path or fresh.paper_lab != self.settings.paper_lab:
-            self.notify("Профиль изменён. Выйдите Q и запустите trade для новой конфигурации.", severity="warning")
+        if self.profile_key(fresh) != self.profile_key(self.settings):
+            await self.reload_profile(fresh)
             return
         self.refresh_data()
 
@@ -364,7 +404,7 @@ class TraderApp(App):
 
 def main():
     parser = argparse.ArgumentParser(description="Binance Smart Trader terminal")
-    parser.add_argument("action", choices=["ui", "config", "status", "report", "doctor", "ensure-config"], default="ui", nargs="?")
+    parser.add_argument("action", choices=["ui", "config", "paper", "status", "report", "doctor", "ensure-config"], default="ui", nargs="?")
     args = parser.parse_args()
     from .service import project_directory
     os.chdir(project_directory())
@@ -372,13 +412,21 @@ def main():
         setup_wizard()
         return
     settings = Settings.load()
+    if args.action == "paper":
+        try:
+            fresh = switch_to_paper(settings)
+            print("PAPER включён: Базовый / Рискованный / Активный. Demo-аккаунт отключён, API-ключи не нужны.")
+            print("Настройки сохранены: "+fresh.db_path)
+        except (ValueError, OSError) as exc:
+            raise SystemExit(str(exc)) from None
+        return
     if args.action == "ensure-config":
         if settings.mode == Mode.DEMO and (not settings.binance_enabled or not (settings.demo_key and settings.demo_secret)):
             enable_paper(settings)
             print("Demo-ключи не заданы: включены три локальных PAPER-счёта по 4900 USDT. Binance-аккаунт OFF.")
         return
     if args.action == "ui":
-        TraderApp(settings).run()
+        TraderApp(settings, watch_config=True).run()
         return
     if args.action in {"status", "report"} and settings.paper_lab:
         print_comparison(settings)
