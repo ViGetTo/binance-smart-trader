@@ -4,6 +4,7 @@ import time
 from dataclasses import asdict
 from decimal import Decimal
 
+from .account import account_snapshot
 from .api import APIError
 from .config import dec
 from .db import encode
@@ -86,6 +87,8 @@ class Execution:
         async with self.lock:
             venue = "DEMO" if self.demo else "PAPER"
             if venue == "DEMO" and signal.symbol not in self.demo_symbols:
+                if self.settings.strict_demo:
+                    raise Rejected("Строгий DEMO: символ отсутствует на Binance Demo; PAPER-сделка запрещена")
                 if signal.strategy != "new_listings":
                     raise Rejected("Symbol unavailable on Demo")
                 venue = "PAPER"
@@ -434,6 +437,9 @@ class Execution:
                 failed = True
                 self.db.halt("Unknown open Demo bot order: restore original database before resuming")
             account = await self.demo.signed("GET", "account")
+            if self.settings.demo_balance_sync:
+                self.db.set("demo_account", account_snapshot(account))
+                self.db.set("demo_free_usdt", self.db.get("demo_account")["free_usdt"])
             balances = {b["asset"]: dec(b["free"])+dec(b["locked"]) for b in account["balances"]}
             for p in self.db.positions():
                 if p["venue"] == "DEMO":

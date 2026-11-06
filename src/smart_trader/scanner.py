@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from .models import Rejected
-from .strategies import analyze, ema, market_bullish, quality
+from .strategies import analyze, ema, market_bullish, pullback_signal, quality
 
 
 def eligible(raw, cfg):
@@ -27,10 +27,11 @@ def normalize(matrix, weights):
 
 
 class Scanner:
-    def __init__(self, market, registry, db, config):
+    def __init__(self, market, registry, db, config, selector=None):
         self.market, self.registry, self.db, self.cfg = market, registry, db, config
         self.history = {}
         self.semaphore = asyncio.Semaphore(4)
+        self.selector = selector
 
     async def scan(self):
         await self.market.refresh()
@@ -71,12 +72,20 @@ class Scanner:
                                float(bars.volume.iloc[-1]/bars.volume.iloc[-self.cfg.volume_bars-1:-1].median()),
                                np.log1p(float(book.depth(self.cfg.depth_band)))/(1+book.spread*1000),
                                -value/float(bars.close.iloc[-1])]
+                    options, rejected = [], []
                     try:
-                        signal = analyze(symbol, bars, hourly, self.cfg, bullish=bullish,
-                                         listing=listing, age_hours=ages.get(symbol))
-                        reason = signal.reason
+                        options.append(analyze(symbol, bars, hourly, self.cfg, bullish=bullish,
+                                               listing=listing, age_hours=ages.get(symbol)))
                     except Rejected as exc:
-                        signal, reason = None, str(exc)
+                        rejected.append(str(exc))
+                    if self.selector and self.selector.config.enabled and not listing:
+                        try:
+                            options.append(pullback_signal(symbol, bars, hourly, self.cfg, bullish=bullish))
+                        except Rejected as exc:
+                            rejected.append("pullback: "+str(exc))
+                    signal = self.selector.choose(options, cutoff=float(bars.close_ms.iloc[-1])/1000) if self.selector else next(iter(options), None)
+                    reason = signal.reason if signal else "; ".join(rejected) or "Стратегии отклонены по прошлой статистике"
+                    strategy = signal.strategy if signal else strategy
                     item = {"symbol": symbol, "metrics": metrics, "signal": signal, "reason": reason,
                             "age_hours": ages.get(symbol), "strategy": strategy}
                     (listings if listing else regular).append(item)

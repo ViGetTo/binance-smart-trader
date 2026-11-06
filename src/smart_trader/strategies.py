@@ -4,6 +4,35 @@ import pandas as pd
 from .config import dec
 from .models import Rejected, Signal
 
+STRATEGIES = ("momentum", "trend_pullback", "new_listings")
+
+
+def pullback_signal(symbol, bars, hourly, cfg, *, bullish):
+    value = quality(bars, cfg)
+    if not bullish:
+        raise Rejected("BTC regime blocks new LONG")
+    if len(hourly) < cfg.ema_slow+1 or len(bars) < cfg.ema_fast+2:
+        raise Rejected("Insufficient EMA history")
+    if not (ema(hourly.close, cfg.ema_fast).iloc[-1] > ema(hourly.close, cfg.ema_slow).iloc[-1]
+            and hourly.close.iloc[-1] > ema(hourly.close, cfg.ema_slow).iloc[-1]):
+        raise Rejected("1H EMA trend not confirmed")
+    # EMA before the signal bar is fixed before that bar opens.
+    level = float(ema(bars.close, cfg.ema_fast).iloc[-2])
+    previous, last = bars.iloc[-2], bars.iloc[-1]
+    if not level-value*cfg.pullback_touch_atr <= last.low <= level+value*cfg.pullback_touch_atr:
+        raise Rejected("No controlled pullback to EMA")
+    if not last.close > max(last.open, previous.high, level):
+        raise Rejected("No closed bullish EMA reclaim")
+    volume_base = bars.volume.iloc[-cfg.volume_bars-1:-1].median()
+    if last.volume < cfg.pullback_volume_multiple*volume_base:
+        raise Rejected("Pullback confirmation volume too low")
+    if last.close-level > cfg.max_extension_atr*value:
+        raise Rejected("Pullback entry overextended")
+    entry, risk = dec(last.close), dec(value)*dec(cfg.stop_atr)
+    return Signal(symbol, "trend_pullback", int(last.close_ms), entry, entry-risk,
+                  entry+risk*dec(cfg.target_r), dec(value), dec(level),
+                  f"Closed EMA reclaim {level:.8g}; volume {last.volume/volume_base:.2f}x; ATR {value:.8g}")
+
 
 def ema(series, span):
     return series.ewm(span=span, adjust=False, min_periods=span).mean()

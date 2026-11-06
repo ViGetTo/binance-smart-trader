@@ -26,6 +26,15 @@ def test_streamlit_renders_and_kill_is_persistent(tmp_path, monkeypatch):
     db.close()
 
 
+def test_unconfigured_demo_web_does_not_show_paper_balance(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRADER_DB", str(tmp_path/"demo-web.sqlite"))
+    monkeypatch.setenv("TRADER_MODE", "DEMO")
+    app = AppTest.from_file(Path(__file__).parents[1]/"dashboard.py", default_timeout=15).run()
+    assert not app.exception
+    assert "DEMO" in app.caption[0].value
+    assert all(metric.value == "—" for metric in app.metric)
+
+
 async def test_websocket_reconnect_and_restore_status(db, cfg, monkeypatch):
     connections = []
     updated = asyncio.Event()

@@ -13,7 +13,8 @@ from .market import COLUMNS, closed_frame
 from .models import Book, Rejected
 from .risk import RiskManager
 from .scanner import eligible, normalize
-from .strategies import analyze, ema, market_bullish, quality
+from .selection import StrategySelector
+from .strategies import STRATEGIES, analyze, ema, market_bullish, pullback_signal, quality
 
 
 def hourly_bars(f):
@@ -71,7 +72,8 @@ class Backtester:
         db = Database(":memory:", initial)
         risk = RiskManager(db, self.settings)
         trades, curve = [], {}
-        strategy_curves = {s: {} for s in ("momentum", "new_listings")}
+        strategy_curves = {s: {} for s in STRATEGIES}
+        selector = StrategySelector(db, self.settings.selection, "BACKTEST")
         btc = self.data.frames["BTCUSDT"]
         # 201 complete hours of causal indicator warmup before the evaluated period.
         first = int(self.data.hours["BTCUSDT"].close_ms.iloc[cfg.ema_market])+1 if len(self.data.hours["BTCUSDT"]) > cfg.ema_market else 10**16
@@ -106,6 +108,8 @@ class Backtester:
                          fees=str(dec(p["entry_fee"])+fee), slippage=str(dec(p["slippage"])+quoted*slip),
                          closed_ms=timestamp, exit_reason=reason)
             trades.append(trade)
+            db.execute("INSERT INTO trades(position_id,symbol,strategy,venue,closed,data) VALUES(?,?,?,?,?,?)",
+                        (p["id"], p["symbol"], p["strategy"], "BACKTEST", timestamp/1000, encode(trade)))
             db.set("cash", str(dec(db.get("cash"))+proceeds))
             db.execute("DELETE FROM positions WHERE id=?", (p["id"],))
             db.execute("UPDATE intents SET status='CLOSED' WHERE id=?", (p["id"],))
@@ -145,10 +149,17 @@ class Backtester:
                     components = [float(f.close.iloc[-1]/f.close.iloc[-97]-1)*100-btc_return,
                                   trend+persistence*.01, float(f.volume.iloc[-1]/f.volume.iloc[-cfg.volume_bars-1:-1].median()),
                                   np.log1p(liquidity)/(1+spread*1000), -value/float(f.close.iloc[-1])]
+                    options = []
                     try:
-                        signal = analyze(symbol, f, h, cfg, bullish=bullish, listing=listing, age_hours=age)
+                        options.append(analyze(symbol, f, h, cfg, bullish=bullish, listing=listing, age_hours=age))
                     except Rejected:
-                        signal = None
+                        pass
+                    if self.settings.selection.enabled and not listing:
+                        try:
+                            options.append(pullback_signal(symbol, f, h, cfg, bullish=bullish))
+                        except Rejected:
+                            pass
+                    signal = selector.choose(options, cutoff=(timestamp-1)/1000)
                     groups["new_listings" if listing else "momentum"].append((components, signal, rules))
                 except Rejected:
                     continue
@@ -217,12 +228,6 @@ class Backtester:
         for strategy in strategy_curves:
             strategy_curves[strategy][timeline[-1]+900_000] = db.rows(
                 "SELECT equity FROM strategy_equity WHERE strategy=? ORDER BY ts DESC LIMIT 1", (strategy,))[0]["equity"]
-        # Backtest realized trades live in the research ledger, not the runtime trades table.
-        # Attribute cumulative PnL below directly to the historical trade and position records.
-        for strategy in strategy_curves:
-            for ts in strategy_curves[strategy]:
-                realized = sum(float(t["pnl"]) for t in trades if t["strategy"] == strategy and t["closed_ms"] <= ts)
-                strategy_curves[strategy][ts] += realized
         equity = pd.Series(curve)
         equity.index = pd.to_datetime(equity.index, unit="ms", utc=True)
         equity = pd.concat([pd.Series([float(initial)], index=pd.to_datetime([timeline[0]], unit="ms", utc=True)), equity])
@@ -234,7 +239,7 @@ class Backtester:
                       "At data end positions assume liquidation at last observable close; delisting may be worse",
                       "Require 30–60 days forward PAPER/DEMO and sufficient trades; no profitability claim"])
         report["warnings"].extend(self.data.manifest.get("limitations", []))
-        for strategy in groups:
+        for strategy in STRATEGIES:
             subset = [t for t in trades if t["strategy"] == strategy]
             attributed = pd.Series(strategy_curves[strategy])
             attributed.index = pd.to_datetime(attributed.index, unit="ms", utc=True)

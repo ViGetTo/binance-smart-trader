@@ -13,6 +13,8 @@ ema_market = 200
 hourly_bars = 260
 quarter_bars = 120
 volume_multiple = 1.7
+pullback_volume_multiple = 1.2
+pullback_touch_atr = 0.25
 listing_volume_multiple = 2.0
 atr_period = 14
 stop_atr = 1.8
@@ -50,3 +52,10 @@ consecutive_losses = 3
 pause_hours = 12
 max_correlation = 0.85
 correlation_bars = 48
+
+[selection]
+enabled = true
+min_trades = 20
+min_days = 30
+lookback_days = 90
+confidence_z = 1.96

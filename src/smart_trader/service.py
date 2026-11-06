@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .config import Mode, Settings
 from .db import Database
+from .health import health_state
 from .runtime import ProcessLock
 
 
@@ -24,6 +25,18 @@ def unresolved(db):
 
 
 def control(db, action):
+    if action == "freeze-flat":
+        with db.transaction():
+            db.halt("Repair/update: freeze entries before checking flat portfolio")
+            unsafe = bool(unresolved(db))
+            if not unsafe:
+                db.set("service_stop", True)
+        if unsafe:
+            raise ValueError("Есть позиции или неопределённые заявки. Завершать сессию нельзя: trade stop / trade doctor")
+        return {"message": "Позиции и intents закрыты; допускается перезапуск зависшей сессии"}
+    if action == "web":
+        db.set("web_enabled", True)
+        return {"message": "Веб-панель запрошена: http://127.0.0.1:8501"}
     if action == "prepare":
         # A fresh explicit start may clear an old completed stop, never a pending liquidation.
         if not unresolved(db):
@@ -31,7 +44,7 @@ def control(db, action):
         return {"message": "Старт подготовлен; Kill Switch и ожидающее закрытие сохранены"}
     if action == "status":
         heartbeat = db.get("heartbeat", 0)
-        return {"mode": db.get("mode", "PAPER"), "service_pid": db.get("service_pid"),
+        return {"mode": db.get("mode", "PAPER"), "service_pid": db.get("service_pid"), "health": health_state(db),
                 "service_heartbeat_age_seconds": round(time.time()-db.get("service_heartbeat", 0), 1),
                 "trader_heartbeat_age_seconds": round(time.time()-heartbeat, 1) if heartbeat else None,
                 "kill_switch": db.get("kill", False), "reason": db.get("kill_reason", ""),
@@ -78,7 +91,7 @@ def supervise(root, db, *, popen=subprocess.Popen, sleep=time.sleep, stop_event=
     environment = dict(os.environ, PYTHONUNBUFFERED="1", TZ="UTC", OPENBLAS_NUM_THREADS="1",
                        OMP_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
     db.set("service_pid", os.getpid())
-    print("Binance Smart Trader: только PAPER/DEMO. Панель http://127.0.0.1:8501", flush=True)
+    print("Binance Smart Trader: Demo · терминал trade ui · веб-панель по команде trade web", flush=True)
     try:
         while True:
             if stop_event is not None and stop_event.is_set():
@@ -102,14 +115,19 @@ def supervise(root, db, *, popen=subprocess.Popen, sleep=time.sleep, stop_event=
             if bot is None and now >= retry_at:
                 bot = popen([sys.executable, "-u", "-m", "smart_trader.cli", "run"],
                             cwd=root, env=environment, start_new_session=True)
+            if not db.get("web_enabled", True) and dashboard is not None:
+                terminate(dashboard)
+                dashboard = None
             if dashboard is not None and dashboard.poll() is not None:
+                db.set("web_status", {"ok": False, "ts": now, "exit_code": dashboard.returncode})
                 print("Панель завершилась; повтор запуска через 30 с. Бот продолжает работать.", flush=True)
                 dashboard = None
                 dashboard_retry_at = now+30
-            if dashboard is None and now >= dashboard_retry_at:
+            if db.get("web_enabled", True) and dashboard is None and now >= dashboard_retry_at:
                 dashboard = popen([sys.executable, "-u", "-m", "streamlit", "run", str(root/"dashboard.py"),
                                    "--server.address=127.0.0.1", "--server.port=8501", "--server.headless=true",
                                    "--browser.gatherUsageStats=false"], cwd=root, env=environment, start_new_session=True)
+                db.set("web_status", {"ok": None, "ts": now, "state": "starting"})
             sleep(1)
     finally:
         # Signal handlers request a flatten and keep the loop alive until it is confirmed.
@@ -121,7 +139,7 @@ def supervise(root, db, *, popen=subprocess.Popen, sleep=time.sleep, stop_event=
 
 def main():
     parser = argparse.ArgumentParser(description="Virtual-only Termux service")
-    parser.add_argument("action", choices=["run", "status", "pause", "flatten", "stop", "resume", "prepare"])
+    parser.add_argument("action", choices=["run", "status", "pause", "flatten", "stop", "resume", "prepare", "freeze-flat", "web"])
     args = parser.parse_args()
     root = project_directory()
     os.chdir(root)
@@ -129,6 +147,10 @@ def main():
     if settings.mode == Mode.BACKTEST and args.action == "run":
         parser.error("trade запускает PAPER/DEMO; для BACKTEST используйте smart-trader backtest")
     db = Database(settings.db_path, settings.risk.initial_balance)
+    if db.get("mode") is None:
+        db.set("mode", settings.mode.value)
+    if db.get("web_enabled") is None:
+        db.set("web_enabled", settings.web_enabled)
     try:
         if args.action != "run":
             print(json.dumps(control(db, args.action), ensure_ascii=False, indent=2))

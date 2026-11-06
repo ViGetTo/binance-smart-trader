@@ -37,6 +37,24 @@
         "evidence": "INSUFFICIENT",
         "equity_basis": "Initial portfolio budget + attributed realized and marked strategy PnL; shared limits"
       },
+      "trend_pullback": {
+        "trades": 0,
+        "net_pnl": 0.0,
+        "realized_pnl": 0.0,
+        "win_rate": null,
+        "profit_factor": null,
+        "max_drawdown": -0.0,
+        "sharpe_daily_365": null,
+        "expectancy_r": null,
+        "average_win": null,
+        "average_loss": null,
+        "fees": 0,
+        "slippage": 0,
+        "costs_pct_capital": 0.0,
+        "costs_pct_gross_absolute_result": null,
+        "evidence": "INSUFFICIENT",
+        "equity_basis": "Initial portfolio budget + attributed realized and marked strategy PnL; shared limits"
+      },
       "new_listings": {
         "trades": 0,
         "net_pnl": 0.0,

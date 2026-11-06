@@ -5,9 +5,10 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .account import bind_account
 from .analytics import completed_day
 from .api import BinanceAPI
-from .config import Mode, dec
+from .config import Mode, Settings, dec
 from .db import Database
 from .execution import Execution
 from .market import ListingsRegistry, MarketData, alpha_watchlist
@@ -15,6 +16,7 @@ from .models import Rejected
 from .notifications import Telegram
 from .risk import RiskManager
 from .scanner import Scanner
+from .selection import StrategySelector
 
 
 class ProcessLock:
@@ -46,13 +48,18 @@ class Trader:
     def __init__(self, settings, public=None, demo=None):
         self.settings = settings
         self.db = Database(settings.db_path, settings.risk.initial_balance)
-        self.public = public or BinanceAPI()
         mode = settings.mode
         if mode == Mode.BACKTEST:
             raise ValueError("Use the backtest command for BACKTEST mode")
         if mode == Mode.DEMO and not (settings.demo_key and settings.demo_secret):
+            if settings.strict_demo:
+                self.db.set("mode", "DEMO")
+                self.db.halt("Demo keys missing. Run trade config; PAPER fallback is disabled")
+                self.db.close()
+                raise ValueError("DEMO: задайте Demo API key / secret через trade config; PAPER-подмена отключена")
             mode = Mode.PAPER
             self.db.event("MODE", "DEMO credentials absent: switched to PAPER using public real market data", True)
+        self.public = public or BinanceAPI()
         self.demo = (demo or BinanceAPI(demo=True, key=settings.demo_key, secret=settings.demo_secret)) if mode == Mode.DEMO else None
         if not self.demo and self.db.rows("SELECT id FROM intents WHERE venue='DEMO' AND status NOT IN ('CLOSED','REJECTED')"):
             self.db.halt("Demo exposure exists: restore Demo credentials to reconcile; PAPER fallback blocked")
@@ -61,7 +68,8 @@ class Trader:
         self.db.set("configuration", {"strategy": asdict(settings.strategy), "risk": asdict(settings.risk)})
         self.market = MarketData(self.public, self.db, settings.strategy)
         self.registry = ListingsRegistry(self.db, self.market)
-        self.scanner = Scanner(self.market, self.registry, self.db, settings.strategy)
+        self.scanner = Scanner(self.market, self.registry, self.db, settings.strategy,
+                               StrategySelector(self.db, settings.selection, mode.value))
         self.risk = RiskManager(self.db, settings)
         self.execution = Execution(self.db, settings, self.risk, self.market, self.demo)
         self.telegram = Telegram(self.db, settings.telegram_token, settings.telegram_chat)
@@ -70,6 +78,8 @@ class Trader:
         await self.public.sync_time()
         if self.demo:
             await self.demo.sync_time()
+            if self.settings.demo_balance_sync:
+                bind_account(self.db, self.settings.demo_key, await self.demo.signed("GET", "account"))
             await self.execution.prepare_demo()
             await self.execution.reconcile()
         await self.market.refresh()
@@ -150,6 +160,9 @@ class Trader:
 
     async def _messages(self):
         while True:
+            # dotenv is read without mutating os.environ, so Telegram edits apply without moving positions.
+            fresh = Settings.load()
+            self.telegram = Telegram(self.db, fresh.telegram_token, fresh.telegram_chat)
             date = datetime.now(timezone.utc).date().isoformat()
             if self.db.get("daily_report_checked") != date:
                 report = completed_day(self.db)

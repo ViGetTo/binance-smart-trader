@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from smart_trader.config import Settings, dec
+from smart_trader.config import Mode, Settings, dec
 from smart_trader.db import Database
 from smart_trader.filters import SymbolRules
 from smart_trader.models import Book, Signal
@@ -36,7 +36,8 @@ def frame(count=240, step=3_600_000, trend=True, end=None):
 
 @pytest.fixture
 def cfg(tmp_path):
-    return Settings(db_path=str(tmp_path/"trader.sqlite"))
+    # Explicit research fixture; real defaults require verified Demo credentials/balance.
+    return Settings(mode=Mode.PAPER, db_path=str(tmp_path/"trader.sqlite"), strict_demo=False, demo_balance_sync=False)
 
 
 @pytest.fixture

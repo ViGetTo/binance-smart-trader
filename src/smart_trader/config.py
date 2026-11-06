@@ -6,7 +6,7 @@ from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 DEMO_URL = "https://demo-api.binance.com/api"
 PUBLIC_URL = "https://api.binance.com/api"
@@ -34,6 +34,8 @@ class StrategyConfig:
     hourly_bars: int = 260
     quarter_bars: int = 120
     volume_multiple: float = 1.7
+    pullback_volume_multiple: float = 1.2
+    pullback_touch_atr: float = .25
     listing_volume_multiple: float = 2
     atr_period: int = 14
     stop_atr: float = 1.8
@@ -124,8 +126,23 @@ class RiskConfig:
 
 
 @dataclass(frozen=True)
+class SelectionConfig:
+    enabled: bool = True
+    min_trades: int = 20
+    min_days: int = 30
+    lookback_days: int = 90
+    confidence_z: float = 1.96
+
+    def __post_init__(self):
+        if not isinstance(self.enabled, bool) or self.min_trades < 10 or self.min_days < 7:
+            raise ValueError("Strategy selection requires at least 10 trades / 7 days")
+        if self.lookback_days < self.min_days or not 1 <= self.confidence_z <= 3:
+            raise ValueError("Invalid strategy selection window")
+
+
+@dataclass(frozen=True)
 class Settings:
-    mode: Mode = Mode.PAPER
+    mode: Mode = Mode.DEMO
     db_path: str = "data/trader.sqlite"
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
@@ -133,19 +150,33 @@ class Settings:
     demo_secret: str = field(default="", repr=False)
     telegram_token: str = field(default="", repr=False)
     telegram_chat: str = field(default="", repr=False)
+    strict_demo: bool = True
+    demo_balance_sync: bool = True
+    web_enabled: bool = False
+    selection: SelectionConfig = field(default_factory=SelectionConfig)
 
     @classmethod
     def load(cls):
-        load_dotenv(override=False)
-        p = Path(os.getenv("TRADER_CONFIG", "config.toml"))
+        # Do not inject dotenv values into os.environ: configuration/Telegram reloads must see edits.
+        env = {**dotenv_values(".env", interpolate=False), **os.environ}
+        p = Path(env.get("TRADER_CONFIG", "config.toml"))
         raw = tomllib.loads(p.read_text("utf-8")) if p.exists() else {}
-        cfg = cls(mode=Mode(os.getenv("TRADER_MODE", "PAPER").upper()),
-                  db_path=os.getenv("TRADER_DB", "data/trader.sqlite"),
+        def flag(name, default):
+            value = str(env.get(name, default)).lower()
+            if value not in {"true", "false", "1", "0"}:
+                raise ValueError(f"Invalid boolean: {name}")
+            return value in {"true", "1"}
+        selection = dict(raw.get("selection", {}))
+        if "TRADER_STRATEGY_AUTO" in env:
+            selection["enabled"] = flag("TRADER_STRATEGY_AUTO", "true")
+        cfg = cls(mode=Mode(env.get("TRADER_MODE", "DEMO").upper()),
+                  db_path=env.get("TRADER_DB", "data/demo.sqlite"),
                   strategy=StrategyConfig(**raw.get("strategy", {})), risk=RiskConfig(**raw.get("risk", {})),
-                  demo_key=os.getenv("BINANCE_DEMO_API_KEY", ""),
-                  demo_secret=os.getenv("BINANCE_DEMO_API_SECRET", ""),
-                  telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-                  telegram_chat=os.getenv("TELEGRAM_CHAT_ID", ""))
+                  demo_key=env.get("BINANCE_DEMO_API_KEY", ""), demo_secret=env.get("BINANCE_DEMO_API_SECRET", ""),
+                  telegram_token=env.get("TELEGRAM_BOT_TOKEN", ""), telegram_chat=env.get("TELEGRAM_CHAT_ID", ""),
+                  strict_demo=flag("TRADER_STRICT_DEMO", "true"),
+                  demo_balance_sync=flag("TRADER_DEMO_SYNC_BALANCE", "true"),
+                  web_enabled=flag("TRADER_WEB_ENABLED", "false"), selection=SelectionConfig(**selection))
         cfg.risk.validate()
         s = cfg.strategy
         if len(s.rank_weights) != 5 or abs(sum(s.rank_weights) - 1) > 1e-9 or min(s.rank_weights) < 0:

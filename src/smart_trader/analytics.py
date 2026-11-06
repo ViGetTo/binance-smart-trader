@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
+from .strategies import STRATEGIES
+
 
 def metrics(trades, equity, initial):
     pnls = np.asarray([float(t["pnl"]) for t in trades])
@@ -42,7 +44,7 @@ def database_report(db):
     initial = float(db.get("initial"))
     report = metrics(trades, curve, initial)
     report["by_strategy"] = {}
-    for strategy in ("momentum", "new_listings"):
+    for strategy in STRATEGIES:
         subset = [t for t in trades if t["strategy"] == strategy]
         values = db.rows("SELECT ts,equity FROM strategy_equity WHERE strategy=? ORDER BY ts", (strategy,))
         attributed = pd.Series([v["equity"] for v in values],

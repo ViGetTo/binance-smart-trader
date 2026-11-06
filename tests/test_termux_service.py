@@ -148,6 +148,7 @@ if name == 'tmux':
 if name == 'proot-distro':
     if args[:2] == ['install','--help']: print('--name NAME')
     elif '/bin/true' in args: sys.exit(1)
+    elif args[-1:] == ['freeze-flat'] and os.environ.get('TRADER_TEST_REFUSE_FREEZE') == '1': sys.exit(2)
     elif args[-1:] == ['stop']: session.unlink(missing_ok=True)
 '''
     for command in ("pkg", "proot-distro", "tmux", "termux-wake-lock", "termux-wake-unlock", "sleep"):
@@ -214,3 +215,12 @@ def test_unknown_trade_action_cannot_be_executed(termux):
     result = shell(termux, "trade-termux.sh", "run; touch BAD_MARKER")
     assert result.returncode == 2
     assert not (termux[0]/"BAD_MARKER").exists()
+
+
+@pytest.mark.parametrize("installer", [True, False])
+def test_update_and_repair_never_kill_session_when_flat_check_fails(termux, installer):
+    termux[3].touch()
+    termux[1]["TRADER_TEST_REFUSE_FREEZE"] = "1"
+    result = shell(termux, "termux-install.sh") if installer else shell(termux, "trade-termux.sh", "repair")
+    assert result.returncode != 0
+    assert not any(name == "tmux" and args[0] == "kill-session" for name, args in calls(termux))

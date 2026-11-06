@@ -14,6 +14,8 @@ trader_distro=smart-trader
 trader_guest=/opt/binance-smart-trader
 trader_python="$trader_guest/.venv-termux/bin/python"
 trader_session=binance-smart-trader
+trader_open_ui=0
+if (( $# == 0 )); then trader_open_ui=1; fi
 trader_action="${1:-start}"
 if (( $# )); then shift; fi
 if (( $# )); then
@@ -25,10 +27,15 @@ trader_guest_command() {
     proot-distro login --bind "$trader_project:$trader_guest" "$trader_distro" -- \
         "$trader_python" -u -m smart_trader.service "$1"
 }
+trader_terminal() {
+    proot-distro login --bind "$trader_project:$trader_guest" "$trader_distro" -- \
+        "$trader_python" -u -m smart_trader.terminal "$1"
+}
 trader_has_session() { tmux has-session -t "=$trader_session" 2>/dev/null; }
 
 case "$trader_action" in
     start)
+        trader_terminal ensure-config
         if trader_has_session; then
             printf '%s\n' 'Сессия уже работает. trade status покажет состояние торгового процесса.'
         else
@@ -48,9 +55,22 @@ case "$trader_action" in
             fi
             printf '%s\n' 'Сервис запущен в фоне. Готовность Binance проверьте: trade status'
         fi
-        printf '%s\n' 'Панель: http://127.0.0.1:8501 | Логи: trade logs | Выход из trade logs: Ctrl+C'
+        printf '%s\n' 'Терминал: trade ui | Дополнительный сайт: trade web | Логи: trade logs'
+        if (( trader_open_ui )); then trader_terminal ui; fi
         ;;
-    status|pause|flatten|resume)
+    ui|stats) trader_terminal ui ;;
+    config) trader_terminal config ;;
+    status|doctor) trader_terminal "$trader_action" ;;
+    web)
+        trader_guest_command web
+        printf '%s\n' 'Откройте в браузере этого телефона: http://127.0.0.1:8501. Нужна работающая сессия trade.'
+        ;;
+    repair)
+        trader_guest_command freeze-flat
+        if trader_has_session; then tmux kill-session -t "=$trader_session"; fi
+        printf '%s\n' 'Плоская сессия остановлена. Дальше: trade config, затем trade и trade resume.'
+        ;;
+    pause|flatten|resume)
         trader_guest_command "$trader_action"
         ;;
     stop)
@@ -79,7 +99,6 @@ case "$trader_action" in
         exec tail -n 80 -F -- "$trader_project/data/logs/trade.log"
         ;;
     attach) exec tmux attach-session -t "=$trader_session" ;;
-    config) exec nano "$trader_project/.env" ;;
     update)
         if trader_has_session; then
             printf '%s\n' 'Сначала trade stop и дождитесь закрытия позиций; затем повторите trade update.' >&2
@@ -89,11 +108,16 @@ case "$trader_action" in
         exec bash "$trader_project/scripts/termux-install.sh"
         ;;
     help|-h|--help)
-        printf '%s\n' 'trade — бот + панель в фоне (только виртуальные средства)' \
+        printf '%s\n' 'trade — запустить Binance Demo и открыть терминальную панель' \
+            'trade start    — только фоновый сервис' \
+            'trade ui       — открыть терминальную аналитику; Q закрывает только интерфейс' \
             'trade status   — режим, heartbeat, позиции, остановка входов' \
+            'trade doctor   — диагностика сервиса, Binance и веб-панели' \
+            'trade web      — включить дополнительную веб-панель' \
             'trade logs     — журнал; Ctrl+C закрывает только просмотр' \
             'trade check    — публичная проверка доступности Binance' \
-            'trade config   — редактирование .env в nano' \
+            'trade config   — мастер Demo API и Telegram; секреты скрыты' \
+            'trade repair   — остановить зависшую сессию, только если нет позиций/intents' \
             'trade pause    — остановить входы, оставить защиту и монитор' \
             'trade flatten  — остановить входы и запросить закрытие позиций' \
             'trade stop     — закрыть позиции и затем остановить сервис' \

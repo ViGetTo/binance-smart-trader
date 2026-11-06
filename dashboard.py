@@ -1,7 +1,7 @@
 import json
 import time
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import streamlit as st
@@ -14,17 +14,20 @@ st.set_page_config(page_title="Binance Smart Trader — virtual only", layout="w
 settings = Settings.load()
 
 
-@st.fragment(run_every="5s")
+@st.fragment(run_every=timedelta(seconds=5))
 def panel():
     db = Database(settings.db_path, settings.risk.initial_balance)
     try:
         st.title("Binance Smart Trader")
-        mode = db.get("mode", "PAPER")
+        mode = db.get("mode", settings.mode.value)
         st.caption(f"Только виртуальные средства · {mode} · время UTC")
+        verified = mode != "DEMO" or db.get("demo_balance_initialized", False)
+        if not verified:
+            st.warning("Баланс Binance Demo ещё не подтверждён. Выполните trade config, затем trade. Данные PAPER не являются балансом Binance.")
         heartbeat = db.get("heartbeat", 0)
         stale = time.time()-heartbeat > 30
         if stale:
-            st.error("Нет свежего heartbeat исполнителя. PAPER-защита требует работающего процесса бота.")
+            st.error("Нет свежего heartbeat исполнителя. Проверьте trade doctor: открытая страница не означает, что бот работает.")
         if db.get("kill", False):
             st.warning("Новые входы остановлены: " + db.get("kill_reason", "Kill switch"))
         report = database_report(db)
@@ -35,18 +38,23 @@ def panel():
         for col, (label, value) in zip(columns, [("Капитал", equity), ("Свободный бюджет", cash),
                    ("Открытые активы", equity-cash), ("PnL сегодня", equity-float(db.get("day_anchor", {}).get("equity", initial))),
                    ("PnL недели", equity-float(db.get("week_anchor", {}).get("equity", initial)))], strict=True):
-            col.metric(label, f"{value:,.2f} USDT")
-        st.write(f"PnL всего: {equity-initial:,.2f} USDT · Max DD: {report['max_drawdown']:.2%}")
+            col.metric(label, f"{value:,.2f} USDT" if verified else "—")
+        if verified:
+            st.write(f"PnL всего: {equity-initial:,.2f} USDT · Max DD: {report['max_drawdown']:.2%}")
+        account = db.get("demo_account", {})
+        if mode == "DEMO" and account:
+            st.caption(f"Binance Demo API: свободно {account['free_usdt']} USDT · locked {account['locked_usdt']} USDT. "
+                       "Капитал бота отражает его собственные исполнения и расходы.")
         a, b, c = st.columns(3)
-        if a.button("Остановить новые сделки", use_container_width=True):
+        if a.button("Остановить новые сделки", width="stretch"):
             db.halt("User dashboard kill switch")
             st.rerun()
-        if b.button("Остановить входы и закрыть позиции", use_container_width=True):
+        if b.button("Остановить входы и закрыть позиции", width="stretch"):
             with db.transaction():
                 db.halt("User requested virtual position flatten")
                 db.set("flatten", True)
             st.rerun()
-        if c.button("Запросить возобновление после проверки", disabled=stale, use_container_width=True):
+        if c.button("Запросить возобновление после проверки", disabled=stale, width="stretch"):
             db.set("resume_requested", True)
             st.info("Исполнитель проверит соединение, состояние ордеров и настройки риска.")
         st.write({"Binance REST": db.get("rest_status"), "Public WebSocket": db.get("ws_status"),
@@ -61,27 +69,27 @@ def panel():
             st.line_chart(f[["equity"]], x_label="UTC", y_label="USDT")
             st.area_chart((1-f.equity/f.equity.cummax()).rename("drawdown"))
         st.subheader("Открытые позиции: venue отличает PAPER от Binance DEMO")
-        st.dataframe(pd.DataFrame(db.positions()), use_container_width=True)
+        st.dataframe(pd.DataFrame(db.positions()), width="stretch")
         st.subheader("Лучшие кандидаты")
-        st.dataframe(pd.DataFrame(db.get("candidates", [])), use_container_width=True)
+        st.dataframe(pd.DataFrame(db.get("candidates", [])), width="stretch")
         st.subheader("New Listings Hunter")
-        st.dataframe(pd.DataFrame(db.get("listing_candidates", [])), use_container_width=True)
+        st.dataframe(pd.DataFrame(db.get("listing_candidates", [])), width="stretch")
         listings = db.rows("SELECT symbol,first_seen,earliest_ms,last_seen,active FROM symbols WHERE "
                            "earliest_ms>? ORDER BY earliest_ms DESC", ((time.time()-7*86400)*1000,))
-        st.dataframe(pd.DataFrame(listings), use_container_width=True)
+        st.dataframe(pd.DataFrame(listings), width="stretch")
         st.caption("earliest_ms — первая доступная свеча; first_seen — обнаружение ботом. Объявление Binance автоматически не подтверждено.")
         with st.expander("Binance Alpha — информационный список, без Spot-ордеров"):
             st.write(db.get("alpha_status", "Ещё не загружен"))
-            st.dataframe(pd.DataFrame(db.get("alpha_watchlist", [])), use_container_width=True)
+            st.dataframe(pd.DataFrame(db.get("alpha_watchlist", [])), width="stretch")
         st.subheader("Решения и причины отклонения")
-        st.dataframe(pd.DataFrame(db.rows("SELECT * FROM decisions ORDER BY id DESC LIMIT 300")), use_container_width=True)
+        st.dataframe(pd.DataFrame(db.rows("SELECT * FROM decisions ORDER BY id DESC LIMIT 300")), width="stretch")
         st.subheader("Закрытые сделки")
         trades = [dict(json.loads(t["data"]), closed=datetime.fromtimestamp(t["closed"], timezone.utc))
                   for t in db.rows("SELECT * FROM trades ORDER BY closed DESC LIMIT 1000")]
-        st.dataframe(pd.DataFrame(trades), use_container_width=True)
+        st.dataframe(pd.DataFrame(trades), width="stretch")
         st.download_button("Экспорт сделок CSV", pd.DataFrame(trades).to_csv(index=False), "trades.csv", "text/csv")
-        st.subheader("Статистика стратегий")
-        st.dataframe(pd.DataFrame(report["by_strategy"]).T, use_container_width=True)
+        st.subheader("Статистика стратегий: breakout / trend pullback / new listings")
+        st.dataframe(pd.DataFrame(report["by_strategy"]).T, width="stretch")
         st.json({k: v for k, v in report.items() if k != "by_strategy"}, expanded=False)
         days = (time.time()-db.get("started", time.time()))/86400
         st.info(f"Форвард-наблюдение: {days:.1f} дней. Ориентир: 30–60 дней и достаточное число сделок. "
@@ -103,7 +111,7 @@ def panel():
                     db.set("risk_overrides", current)
                     st.success("Следующее решение Risk Manager использует эти лимиты.")
         with st.expander("События"):
-            st.dataframe(pd.DataFrame(db.rows("SELECT * FROM events ORDER BY id DESC LIMIT 200")), use_container_width=True)
+            st.dataframe(pd.DataFrame(db.rows("SELECT * FROM events ORDER BY id DESC LIMIT 200")), width="stretch")
     finally:
         db.close()
 

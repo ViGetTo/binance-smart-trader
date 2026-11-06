@@ -7,6 +7,7 @@ import pandas as pd
 
 from .config import RiskConfig, dec
 from .models import Plan, Rejected
+from .strategies import STRATEGIES
 
 
 class RiskManager:
@@ -39,7 +40,7 @@ class RiskManager:
         realized = {row["strategy"]: dec(row["pnl"]) for row in self.db.rows(
             "SELECT strategy,SUM(CAST(json_extract(data,'$.pnl') AS REAL)) AS pnl FROM trades GROUP BY strategy")}
         positions = self.db.positions()
-        for strategy in ("momentum", "new_listings"):
+        for strategy in STRATEGIES:
             pnl = realized.get(strategy, Decimal(0))
             for p in positions:
                 if p["strategy"] == strategy:
@@ -61,7 +62,7 @@ class RiskManager:
     def _approve(self, s, rules, book, venue, histories, *, now=None, reference=None,
                  base_position=Decimal(0), reserved_key=None):
         r, c = self.config(), self.settings.strategy
-        if s.strategy not in {"momentum", "new_listings"}:
+        if s.strategy not in STRATEGIES:
             raise ValueError("Unknown strategy")
         now = time.time() if now is None else now
         if self.db.get("kill", False):
@@ -88,6 +89,12 @@ class RiskManager:
         if listing and any(p["strategy"] == "new_listings" for p in positions):
             raise Rejected("Only one new-listing position")
         equity = dec(self.db.get("equity", self.db.get("cash")))
+        if venue == "DEMO" and self.settings.demo_balance_sync:
+            if not self.db.get("demo_balance_initialized", False):
+                raise Rejected("Demo account balance has not been verified")
+            remote_cash = dec(self.db.get("demo_free_usdt", 0))
+            held_value = sum((dec(p["qty"])*dec(p.get("mark", p["entry"])) for p in positions), Decimal(0))
+            equity = min(equity, remote_cash+held_value)
         if equity <= 0:
             raise ValueError("Nonpositive equity")
         for name, limit in (("day", r.daily_loss), ("week", r.weekly_loss)):
@@ -128,6 +135,8 @@ class RiskManager:
         if listing:
             room = min(room, equity*dec(r.listing_max_position))
         cash = dec(self.db.get("cash"))
+        if venue == "DEMO" and self.settings.demo_balance_sync:
+            cash = min(cash, dec(self.db.get("demo_free_usdt", 0)))
         budget = equity*dec(r.listing_risk if listing else r.trade_risk)
         qty = rules.quantity(min(budget/loss, room/entry, cash/(entry*(1+fee))))
         for q in (qty, rules.quantity(qty*(1-fee))):

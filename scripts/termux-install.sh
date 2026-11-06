@@ -36,6 +36,12 @@ if ! proot-distro login "$trader_distro" -- /bin/true >/dev/null 2>&1; then
 fi
 
 proot-distro login "$trader_distro" -- /bin/mkdir -p "$trader_guest"
+if tmux has-session -t '=binance-smart-trader' 2>/dev/null; then
+    printf '%s\n' 'Проверяю отсутствие позиций перед обновлением работающей сессии...'
+    proot-distro login --bind "$trader_project:$trader_guest" "$trader_distro" -- \
+        "$trader_guest/.venv-termux/bin/python" -m smart_trader.service freeze-flat
+    tmux kill-session -t '=binance-smart-trader'
+fi
 proot-distro login --bind "$trader_project:$trader_guest" "$trader_distro" -- \
     /bin/bash "$trader_guest/scripts/ubuntu-install.sh"
 
@@ -48,6 +54,6 @@ printf '%s\n' "$trader_project" > "$trader_config_dir/project-path"
 } > "$PREFIX/bin/trade"
 chmod 700 "$PREFIX/bin/trade"
 printf '\n%s\n' 'Установка завершена. Теперь из любого каталога: trade' \
-    'Панель: http://127.0.0.1:8501' \
+    'Ключи и Telegram: trade config | Аналитика в терминале: trade' \
     'Статус: trade status | Журнал: trade logs | Безопасная остановка: trade stop' \
-    'По умолчанию PAPER: настоящие котировки и только виртуальные деньги.'
+    'Binance Spot Demo: ключи только с demo.binance.com, стартовый капитал из API.'

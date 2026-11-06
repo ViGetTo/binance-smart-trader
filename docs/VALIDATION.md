@@ -5,14 +5,16 @@
 
 | Проверка | Фактический результат |
 |---|---|
-| `pytest -q` | **84 passed**, 14.27 s; 3 DeprecationWarning внутри Streamlit/Pandas о NumPy timedelta |
+| `pytest -q` | **110 passed**, 19.33 s: базовый набор, DEMO account/setup, selector, Textual и безопасное обновление |
 | `ruff check src tests examples dashboard.py` | All checks passed |
 | `python -m compileall -q src dashboard.py` | Успешно |
 | `pip check` | No broken requirements found |
-| `pip wheel . --no-deps` | Собран `binance_smart_trader-0.1.0-py3-none-any.whl` |
+| `pip wheel . --no-deps` | Собран `binance_smart_trader-0.2.0-py3-none-any.whl` |
 | Streamlit AppTest | Панель открывается без исключений; нажатие Kill Switch сохраняется в БД |
 | `bash -n scripts/*.sh` | Все Termux/Ubuntu shell-скрипты синтаксически корректны |
-| Termux launcher / supervisor | 10 тестов: установка, shell quoting, один запуск, restart, controls и безопасная остановка |
+| Termux launcher / supervisor | Установка, shell quoting, один запуск, restart, controls; отказ завершать сессию при pending intents |
+| Textual terminal | 40×30 и 100×36; tabs, pause/resume, подтверждение flatten, выход без остановки монитора |
+| Chromium web QA | `http://127.0.0.1:8501`, 1280×900 и 390×844: загрузка, title/content, нет overlay/console errors, Kill Switch переживает reload |
 | Физическое Android-устройство | **Не проверено**; Termux/proot команды заменены тестовым транспортом |
 | Синтетический пример | 1 сделка, stop-first при пересечении обоих уровней; `INSUFFICIENT` |
 | CLI backtest на том же fixture | Генерация report / trades / equity |
@@ -44,13 +46,20 @@
   неизвестная отмена → отсутствие конфликтующего SELL.
 - Kill Switch во время preflight и на границе отправки блокирует покупку.
 - Комиссия покупки в базовом активе вычитается из продаваемого остатка.
-- Новая монета без Demo symbol явно сохраняется как PAPER.
+- Строгий DEMO не создаёт PAPER-сделок при отсутствующем символе или ключах;
+  отдельный явно разрешённый исследовательский fallback сохраняет метку PAPER.
 - Сигналы/сделки прошлого не меняются при изменении будущих баров.
 - Stop-first, расходы, бенчмарки, недопустимость неявных допущений о глубине,
   disjoint walk-forward, `null` для неопределённых метрик, атрибуция PnL стратегий.
 - Streamlit и persistence control, reconnect WebSocket, различие first_seen/market age,
   Telegram outbox и ограничение повторов одинаковых аварийных уведомлений.
 - Суточный отчёт относится к завершённым UTC суткам и не включает следующий день.
+- Начальный капитал из Demo API 4900 → риск не выше 24.50, exposure не выше 1225 USDT;
+  рестарт не сбрасывает капитал, история симуляции не объявляется историей аккаунта.
+- Атомарная запись `.env` с правами 600, повторное чтение Telegram, секреты не попадают
+  в вывод, Demo verification использует только GET, Telegram test обрабатывает ошибку без токена в exception.
+- Selector исключает будущие сделки и другой venue; отрицательная подтверждённая история
+  блокирует стратегию, малая выборка не объявляется доходной. Trend Pullback проверяет BTC и закрытое подтверждение.
 - Termux: отдельный Ubuntu alias и правильный Android shebang, command из любого каталога,
   отсутствие shell injection в пути проекта, запрет обновления работающего сервиса,
   остановка только после закрытия intents, сохранение Kill Switch при повторном старте,
@@ -59,6 +68,13 @@
 Эти проверки подтверждают локальную реализацию перечисленных сценариев. Они не подтверждают
 совместимость со всеми будущими изменениями API, отсутствие всех возможных дефектов,
 доходность стратегии или эквивалентность модели исполнения настоящему matching engine.
+
+Веб-проверка выполнена Playwright с локальным Chromium: Browser app runtime не был доступен
+среди инструментов этой сессии. Сценарий: загрузка → осмысленная страница → Kill Switch →
+состояние после reload → mobile viewport. Снимки и временные QA-скрипты сохранены вне репозитория.
+Изображение Android-пользователя без адреса страницы не позволяет воспроизвести конкретный
+маршрут браузера; по присланному status достоверно обнаружен устаревший heartbeat (~636 секунд),
+а не доказана причина остановки Android. Предупреждения `use_container_width` устранены.
 
 ## Следующий этап проверки
 
