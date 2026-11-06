@@ -33,8 +33,38 @@ trader_terminal() {
 }
 trader_has_session() { tmux has-session -t "=$trader_session" 2>/dev/null; }
 
+trader_update() {
+    local trader_code=0
+    local -a trader_update_args=()
+    if trader_has_session; then trader_update_args+=(--busy); fi
+    if [[ "${1:-}" == force ]]; then trader_update_args+=(--force); fi
+    proot-distro login --bind "$trader_project:$trader_guest" "$trader_distro" -- \
+        "$trader_python" -u -m smart_trader.updates "${trader_update_args[@]}" || trader_code=$?
+    if (( trader_code == 10 )); then
+        local trader_new_launcher
+        trader_new_launcher=$(mktemp "$PREFIX/bin/.trade-update.XXXXXX")
+        {
+            printf '#!%s/bin/bash\n' "$PREFIX"
+            tail -n +2 "$trader_project/scripts/trade-termux.sh"
+        } > "$trader_new_launcher"
+        chmod 700 "$trader_new_launcher"
+        mv -f -- "$trader_new_launcher" "$PREFIX/bin/trade"
+        if [[ "$trader_action" == start ]]; then
+            if (( trader_open_ui )); then
+                exec env TRADER_UPDATE_CHECKED=1 bash "$trader_project/scripts/trade-termux.sh"
+            else
+                exec env TRADER_UPDATE_CHECKED=1 bash "$trader_project/scripts/trade-termux.sh" start
+            fi
+        fi
+    elif (( trader_code != 0 )); then
+        printf '%s\n' 'Обновление не завершено. Запуск отменён; проверьте trade update.' >&2
+        return "$trader_code"
+    fi
+}
+
 case "$trader_action" in
     start)
+        if [[ "${TRADER_UPDATE_CHECKED:-0}" != 1 ]]; then trader_update; fi
         trader_terminal ensure-config
         if trader_has_session; then
             printf '%s\n' 'Сессия уже работает. trade status покажет состояние торгового процесса.'
@@ -60,7 +90,7 @@ case "$trader_action" in
         ;;
     ui|stats) trader_terminal ui ;;
     config) trader_terminal config ;;
-    status|doctor) trader_terminal "$trader_action" ;;
+    status|report|doctor) trader_terminal "$trader_action" ;;
     web)
         trader_guest_command web
         printf '%s\n' 'Откройте в браузере этого телефона: http://127.0.0.1:8501. Нужна работающая сессия trade.'
@@ -104,26 +134,26 @@ case "$trader_action" in
             printf '%s\n' 'Сначала trade stop и дождитесь закрытия позиций; затем повторите trade update.' >&2
             exit 2
         fi
-        git -C "$trader_project" pull --ff-only
-        exec bash "$trader_project/scripts/termux-install.sh"
+        trader_update force
         ;;
     help|-h|--help)
-        printf '%s\n' 'trade — запустить Binance Demo и открыть терминальную панель' \
+        printf '%s\n' 'trade — проверить обновления, запустить виртуальные счета и открыть CLI' \
             'trade start    — только фоновый сервис' \
             'trade ui       — открыть терминальную аналитику; Q закрывает только интерфейс' \
             'trade status   — режим, heartbeat, позиции, остановка входов' \
+            'trade report   — сравнение трёх PAPER-счетов: PnL, сделки, просадка, издержки' \
             'trade doctor   — диагностика сервиса, Binance и веб-панели' \
             'trade web      — включить дополнительную веб-панель' \
             'trade logs     — журнал; Ctrl+C закрывает только просмотр' \
             'trade check    — публичная проверка доступности Binance' \
-            'trade config   — мастер Demo API и Telegram; секреты скрыты' \
+            'trade config   — PAPER / Binance ON-OFF / Telegram / риск / обновления' \
             'trade repair   — остановить зависшую сессию, только если нет позиций/intents' \
             'trade pause    — остановить входы, оставить защиту и монитор' \
             'trade flatten  — остановить входы и запросить закрытие позиций' \
             'trade stop     — закрыть позиции и затем остановить сервис' \
             'trade resume   — запросить возобновление после проверки риска' \
             'trade attach   — консоль сервиса; Ctrl+B, затем D: выйти без остановки' \
-            'trade update   — обновление после безопасной остановки'
+            'trade update   — принудительная проверка и установка после остановки'
         ;;
     *) printf '%s\n' 'Неизвестная команда. trade help' >&2; exit 2 ;;
 esac

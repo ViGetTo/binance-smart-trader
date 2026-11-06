@@ -98,12 +98,14 @@ class Database:
     def event(self, kind, message, notify=False):
         self.execute("INSERT INTO events(ts,kind,message) VALUES(?,?,?)", (time.time(), kind, message))
         if notify:
+            label = self.get("account_label", "")
+            notification = f"[{label} · PAPER] {message}" if label else message
             if kind in {"HALT", "CONNECTION", "RISK"}:
                 key = "alert:"+hashlib.sha256((kind+message).encode()).hexdigest()
                 if time.time()-self.get(key, 0) < 300:
                     return
                 self.set(key, time.time())
-            self.execute("INSERT INTO outbox(ts,message) VALUES(?,?)", (time.time(), message))
+            self.execute("INSERT INTO outbox(ts,message) VALUES(?,?)", (time.time(), notification))
 
     def halt(self, reason):
         unchanged = self.get("kill", False) and self.get("kill_reason") == reason

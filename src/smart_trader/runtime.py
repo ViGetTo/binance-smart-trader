@@ -7,12 +7,12 @@ from pathlib import Path
 
 from .account import bind_account
 from .analytics import completed_day
-from .api import BinanceAPI
+from .api import APIError, BinanceAPI
 from .config import Mode, Settings, dec
 from .db import Database
 from .execution import Execution
 from .market import ListingsRegistry, MarketData, alpha_watchlist
-from .models import Rejected
+from .models import Rejected, Uncertain
 from .notifications import Telegram
 from .risk import RiskManager
 from .scanner import Scanner
@@ -51,6 +51,9 @@ class Trader:
         mode = settings.mode
         if mode == Mode.BACKTEST:
             raise ValueError("Use the backtest command for BACKTEST mode")
+        if mode == Mode.DEMO and not settings.binance_enabled:
+            self.db.close()
+            raise ValueError("Binance account access disabled; use PAPER")
         if mode == Mode.DEMO and not (settings.demo_key and settings.demo_secret):
             if settings.strict_demo:
                 self.db.set("mode", "DEMO")
@@ -65,6 +68,9 @@ class Trader:
             self.db.halt("Demo exposure exists: restore Demo credentials to reconcile; PAPER fallback blocked")
             raise ValueError("Cannot abandon persisted Demo orders without credentials")
         self.db.set("mode", mode.value)
+        self.db.set("market_data_enabled", settings.market_data_enabled)
+        self.db.set("account_id", settings.account_id)
+        self.db.set("account_label", settings.account_label)
         self.db.set("configuration", {"strategy": asdict(settings.strategy), "risk": asdict(settings.risk)})
         self.market = MarketData(self.public, self.db, settings.strategy)
         self.registry = ListingsRegistry(self.db, self.market)
@@ -75,6 +81,12 @@ class Trader:
         self.telegram = Telegram(self.db, settings.telegram_token, settings.telegram_chat)
 
     async def startup(self):
+        if not self.settings.market_data_enabled:
+            self.db.set("rest_status", {"ok": False, "disabled": True, "ts": time.time()})
+            self.db.set("ws_status", {"ok": False, "disabled": True, "ts": time.time()})
+            self.db.set("scan_data_paused", True)
+            self.db.event("START", "Binance market data OFF: no requests or simulated fills", True)
+            return
         await self.public.sync_time()
         if self.demo:
             await self.demo.sync_time()
@@ -92,7 +104,10 @@ class Trader:
         self.db.event("START", f"Trader started: {self.db.get('mode')}; virtual budget {self.db.get('initial')} USDT", True)
 
     async def scan_once(self, execute=True):
+        if not self.settings.market_data_enabled:
+            return
         signals = await self.scanner.scan()
+        self.db.set("scan_data_paused", False)
         if not execute:
             self.db.set("last_scan", time.time())
             return
@@ -108,12 +123,24 @@ class Trader:
                 self.db.decision(signal.symbol, signal.strategy, False, str(exc))
                 if "limit" in str(exc).lower() or "cooldown" in str(exc).lower():
                     self.db.event("RISK", f"{signal.symbol}: {exc}", True)
+            except Uncertain:
+                if not self.db.get("monitor_data_paused", False):
+                    self.db.halt("Execution state uncertain; entries disabled")
+            except APIError:
+                if self.demo:
+                    self.db.halt("Demo execution API error; reconcile before resuming")
+                else:
+                    self.db.set("scan_data_paused", True)
+                    self.db.event("CONNECTION", "Entry book unavailable; retry on the next scan", True)
             except Exception as exc:
                 self.db.halt(f"Execution error {type(exc).__name__}; entries disabled, monitor continues")
         self.db.set("last_scan", time.time())
 
     async def _scans(self):
         while True:
+            if not self.settings.market_data_enabled:
+                await asyncio.sleep(5)
+                continue
             started = time.monotonic()
             try:
                 await self.public.sync_time()
@@ -123,7 +150,8 @@ class Trader:
                 await self.scan_once()
             except Exception as exc:
                 self.db.set("rest_status", {"ok": False, "ts": time.time(), "error": type(exc).__name__})
-                self.db.halt(f"Scanner data error: {type(exc).__name__}")
+                self.db.set("scan_data_paused", True)
+                self.db.event("CONNECTION", f"Scanner data unavailable: {type(exc).__name__}; retrying", True)
             await asyncio.sleep(max(1, self.settings.strategy.scan_seconds-(time.monotonic()-started)))
 
     async def _monitor(self):
@@ -137,7 +165,8 @@ class Trader:
                     self.db.halt(f"Demo reconciliation error: {type(exc).__name__}; retry without order replay")
             try:
                 flatten = self.db.get("flatten", False)
-                await self.execution.monitor(flatten=flatten)
+                if self.settings.market_data_enabled:
+                    await self.execution.monitor(flatten=flatten)
                 if flatten and not self.db.positions():
                     self.db.set("flatten", False)
                 if self.db.get("resume_requested", False):
@@ -154,6 +183,10 @@ class Trader:
                         self.db.event("RISK", "Resume refused: health, orders or flatten require attention", True)
                     self.db.set("resume_requested", False)
                 self.db.set("heartbeat", time.time())
+            except Uncertain:
+                # Ledger/risk failures retain their hard halt; temporary book failures retry.
+                if not self.db.get("monitor_data_paused", False):
+                    self.db.halt("Monitor state uncertain; entries disabled")
             except Exception as exc:
                 self.db.halt(f"Monitor/reconciliation error: {type(exc).__name__}; automatic entries disabled")
             await asyncio.sleep(max(1, self.settings.strategy.monitor_seconds-(time.monotonic()-started)))
@@ -178,8 +211,9 @@ class Trader:
     async def _alpha(self):
         while True:
             try:
-                self.db.set("alpha_watchlist", await alpha_watchlist())
-                self.db.set("alpha_status", {"ok": True, "ts": time.time(), "purpose": "information only"})
+                if self.settings.market_data_enabled:
+                    self.db.set("alpha_watchlist", await alpha_watchlist())
+                    self.db.set("alpha_status", {"ok": True, "ts": time.time(), "purpose": "information only"})
             except Exception as exc:
                 self.db.set("alpha_status", {"ok": False, "ts": time.time(), "error": type(exc).__name__})
             # This list never enters the Spot universe or execution gateway.

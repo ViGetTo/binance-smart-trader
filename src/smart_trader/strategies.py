@@ -95,7 +95,7 @@ def analyze(symbol, bars, hourly, cfg, *, bullish, listing=False, age_hours=None
     last = bars.iloc[-1]
     volume_base = bars.volume.iloc[-cfg.volume_bars-1:-1].median()
     if not float(last.close) > level:
-        raise Rejected("No closed 15M breakout")
+        raise Rejected("No closed candle breakout")
     if last.volume < multiple*volume_base:
         raise Rejected("Breakout volume too low")
     if float(last.close)-level > cfg.max_extension_atr*value:
@@ -104,4 +104,4 @@ def analyze(symbol, bars, hourly, cfg, *, bullish, listing=False, age_hours=None
     risk = dec(value)*dec(cfg.stop_atr)
     return Signal(symbol, "new_listings" if listing else "momentum", int(last.close_ms),
                   entry, entry-risk, entry+risk*dec(cfg.target_r), dec(value), dec(level),
-                  f"Closed 15M breakout {level:.8g}; volume {last.volume/volume_base:.2f}x; ATR {value:.8g}")
+                  f"Closed {'15m' if listing else cfg.signal_interval} breakout {level:.8g}; volume {last.volume/volume_base:.2f}x; ATR {value:.8g}")

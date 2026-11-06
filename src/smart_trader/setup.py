@@ -16,7 +16,7 @@ from rich.table import Table
 
 from .account import account_snapshot, identity
 from .api import APIError, BinanceAPI
-from .config import RiskConfig, Settings, dec
+from .config import Mode, RiskConfig, Settings, dec
 from .db import Database
 from .health import service_process_alive
 
@@ -63,7 +63,7 @@ async def verify_telegram(token, chat, *, send=False, transport=None):
                 raise ValueError("Telegram отклонил токен")
             if send:
                 response = await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                    "chat_id": chat, "text": "Binance Smart Trader: уведомления подключены. Только Binance DEMO, виртуальные средства."})
+                    "chat_id": chat, "text": "Smart Trader: уведомления подключены. Только виртуальные PAPER/DEMO средства."})
                 if response.status_code != 200 or not response.json().get("ok"):
                     raise ValueError("Telegram: не удалось отправить сообщение. Проверьте chat ID и напишите боту /start")
             return raw["result"].get("username", "bot")
@@ -73,6 +73,10 @@ async def verify_telegram(token, chat, *, send=False, transport=None):
 
 
 def credential_change_allowed(settings):
+    if settings.paper_lab:
+        from .lab import account_settings
+        for profile in account_settings(settings):
+            credential_change_allowed(profile)
     path = Path(settings.db_path)
     if not path.exists():
         return
@@ -119,11 +123,43 @@ def configure_demo(console, settings):
                 return False
     profile = f"data/demo-{identity(key)}.sqlite"
     write_env(".env", {"TRADER_MODE": "DEMO", "TRADER_DB": profile, "TRADER_STRICT_DEMO": "true",
+                       "BINANCE_ENABLED": "true", "BINANCE_MARKET_DATA_ENABLED": "true", "TRADER_PAPER_LAB": "false",
                        "TRADER_DEMO_SYNC_BALANCE": "true", "TRADER_WEB_ENABLED": "false",
                        "TRADER_STRATEGY_AUTO": "true", "BINANCE_DEMO_API_KEY": key, "BINANCE_DEMO_API_SECRET": secret})
     console.print("[green]Сохранено локально с правами 600.[/green] PAPER-история сохранена отдельно.\n"
                   "Стартовый капитал будет получен из API при первом запуске; баланс не выдумывается.")
     return True
+
+
+def enable_paper(settings, balance=4900):
+    credential_change_allowed(settings)
+    if not dec(balance) > 0:
+        raise ValueError("Виртуальный стартовый баланс должен быть положительным")
+    path = settings.db_path if settings.mode == Mode.PAPER and settings.paper_lab else "data/paper-lab.sqlite"
+    write_env(".env", {"TRADER_MODE": "PAPER", "TRADER_DB": path, "TRADER_PAPER_LAB": "true",
+                       "BINANCE_ENABLED": "false", "BINANCE_MARKET_DATA_ENABLED": "true",
+                       "PAPER_INITIAL_BALANCE": str(balance)})
+
+
+def configure_connection(console, settings):
+    console.print("1 — Свой PAPER: 3 счёта, без ключей и верификации\n"
+                  "2 — Подключить Binance Demo (необязательно)\n"
+                  "3 — Публичные котировки Binance: включить / выключить полностью")
+    choice = Prompt.ask("Подключение", choices=["1", "2", "3"], default="1", console=console)
+    if choice == "1":
+        balance = Prompt.ask("Стартовый виртуальный баланс КАЖДОГО нового счёта, USDT",
+                             default="4900", console=console)
+        enable_paper(settings, dec(balance.replace(",", ".")))
+        console.print("[green]Binance-аккаунт OFF. Три PAPER-счёта включены.[/green]\n"
+                      "Используются публичные реальные котировки. Ключи не нужны и не отправляются.\n"
+                      "Существующие счета сохраняют баланс и историю; депозит повторно не начисляется.")
+    elif choice == "2":
+        configure_demo(console, settings)
+    else:
+        credential_change_allowed(settings)
+        enabled = Confirm.ask("Разрешить публичные котировки Binance?", default=settings.market_data_enabled, console=console)
+        write_env(".env", {"BINANCE_MARKET_DATA_ENABLED": "true" if enabled else "false"})
+        console.print("Котировки ON" if enabled else "Binance-котировки OFF: запросов и новых PAPER-исполнений не будет")
 
 
 def configure_telegram(console, settings):
@@ -140,12 +176,17 @@ def configure_telegram(console, settings):
 
 
 def configure_risk(console, settings):
+    if settings.paper_lab:
+        from .lab import account_settings
+        profiles = {cfg.account_id: cfg for cfg in account_settings(settings)}
+        name = Prompt.ask("Счёт", choices=list(profiles), default="base", console=console)
+        settings = profiles[name]
     db = Database(settings.db_path, settings.risk.initial_balance)
     try:
         current = db.get("risk_overrides", asdict(settings.risk))
-        for key, label, low, high in (("trade_risk", "Риск основной стратегии, %", .01, .5),
+        for key, label, low, high in (("trade_risk", "Риск основной стратегии, %", .01, settings.risk.trade_risk*100),
                                       ("listing_risk", "Риск нового листинга, %", .01, .2),
-                                      ("max_exposure", "Суммарная стоимость позиций, %", 1, 25)):
+                                      ("max_exposure", "Суммарная стоимость позиций, %", 1, settings.risk.max_exposure*100)):
             raw = Prompt.ask(label, default=str(current[key]*100), console=console)
             value = dec(raw.replace(",", "."))
             if not dec(low) <= value <= dec(high):
@@ -160,17 +201,17 @@ def configure_risk(console, settings):
 
 def setup_wizard(*, console=None):
     console = console or Console()
-    console.print(Panel.fit("[bold cyan]BINANCE SMART TRADER[/bold cyan]\nНастройка Demo и уведомлений · v0.2", border_style="cyan"))
+    console.print(Panel.fit("[bold cyan]SMART TRADER · PAPER LAB[/bold cyan]\nТри виртуальных счёта · настройки v0.3", border_style="cyan"))
     while True:
         settings = Settings.load()
         menu = Table(show_header=False, box=None, padding=(0, 2))
-        for key, label in (("1", "Binance Demo: ключи, проверка баланса"), ("2", "Telegram: token, chat ID, тест"),
+        for key, label in (("1", "Binance: отключить аккаунт / PAPER / Demo / котировки"), ("2", "Telegram: token, chat ID, тест"),
                            ("3", "Стратегии: автоматический выбор / базовая"), ("4", "Лимиты риска"),
-                           ("5", "Статус настройки"), ("0", "Сохранить и выйти")):
+                           ("5", "Статус настройки"), ("6", "Автообновление с GitHub"), ("0", "Сохранить и выйти")):
             menu.add_row(f"[cyan]{key}[/cyan]", label)
         console.print(menu)
         try:
-            choice = Prompt.ask("Выбор", choices=["1", "2", "3", "4", "5", "0"], default="1" if not settings.demo_key or settings.mode.value != "DEMO" else "0", console=console)
+            choice = Prompt.ask("Выбор", choices=["1", "2", "3", "4", "5", "6", "0"], default="0", console=console)
         except (EOFError, KeyboardInterrupt):
             console.print("\nНастройка закрыта.")
             return
@@ -178,7 +219,7 @@ def setup_wizard(*, console=None):
             if choice == "0":
                 return
             if choice == "1":
-                configure_demo(console, settings)
+                configure_connection(console, settings)
             elif choice == "2":
                 configure_telegram(console, settings)
             elif choice == "3":
@@ -187,8 +228,14 @@ def setup_wizard(*, console=None):
                 console.print("Стратегии сохранены; применятся после остановки и запуска. Лимиты риска не увеличиваются.")
             elif choice == "4":
                 configure_risk(console, settings)
+            elif choice == "6":
+                enabled = Confirm.ask("Проверять и устанавливать обновления при запуске trade?", default=settings.auto_update, console=console)
+                write_env(".env", {"TRADER_AUTO_UPDATE": "true" if enabled else "false"})
+                console.print("Сохранено. Во время работы счетов установка откладывается; .env и БД сохраняются.")
             else:
-                console.print({"mode": settings.mode.value, "strict_demo": settings.strict_demo,
+                console.print({"mode": settings.mode.value, "paper_lab": settings.paper_lab,
+                               "binance_account": settings.binance_enabled, "public_quotes": settings.market_data_enabled,
+                               "auto_update": settings.auto_update, "strict_demo": settings.strict_demo,
                                "demo_key": "сохранён" if settings.demo_key else "не задан",
                                "demo_secret": "сохранён" if settings.demo_secret else "не задан",
                                "telegram": "настроен" if settings.telegram_token and settings.telegram_chat else "не задан",

@@ -54,6 +54,6 @@ printf '%s\n' "$trader_project" > "$trader_config_dir/project-path"
 } > "$PREFIX/bin/trade"
 chmod 700 "$PREFIX/bin/trade"
 printf '\n%s\n' 'Установка завершена. Теперь из любого каталога: trade' \
-    'Ключи и Telegram: trade config | Аналитика в терминале: trade' \
+    'PAPER без ключей / Binance ON-OFF / Telegram: trade config | Аналитика: trade' \
     'Статус: trade status | Журнал: trade logs | Безопасная остановка: trade stop' \
-    'Binance Spot Demo: ключи только с demo.binance.com, стартовый капитал из API.'
+    'По умолчанию: три PAPER-счёта, реальные публичные котировки; утром: trade report.'

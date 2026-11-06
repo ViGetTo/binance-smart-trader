@@ -6,7 +6,7 @@ cd -- "$trader_project"
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends python3 python3-venv python3-pip ca-certificates tzdata
+apt-get install -y --no-install-recommends python3 python3-venv python3-pip ca-certificates tzdata git
 python3 -c 'import sys; assert sys.version_info >= (3, 12), "Требуется Python 3.12+; используйте Ubuntu 24.04+"'
 if [[ ! -x .venv-termux/bin/python ]]; then
     python3 -m venv .venv-termux

@@ -12,7 +12,7 @@ from .models import Book, Rejected
 
 COLUMNS = ["open_ms", "open", "high", "low", "close", "volume", "close_ms", "quote_volume",
            "trades", "buy_volume", "buy_quote", "ignore"]
-INTERVAL_MS = {"1m": 60_000, "15m": 900_000, "1h": 3_600_000}
+INTERVAL_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000}
 
 
 def closed_frame(raw, now_ms, interval):
@@ -88,6 +88,10 @@ class MarketData:
     async def stream(self):
         delay = 1
         while True:
+            if not self.db.get("market_data_enabled", True):
+                self.db.set("ws_status", {"ok": False, "disabled": True, "ts": time.time()})
+                await asyncio.sleep(5)
+                continue
             try:
                 async with connect("wss://stream.binance.com:443/ws/!miniTicker@arr",
                                    ping_interval=None, open_timeout=15, close_timeout=5) as ws:

@@ -110,7 +110,11 @@ def main():
             sys.exit(asyncio.run(check()))
         elif args.command == "run":
             with ProcessLock(cfg.db_path+".lock"):
-                asyncio.run(Trader(cfg).run(once=args.once))
+                if cfg.paper_lab:
+                    from .lab import PaperLab
+                    asyncio.run(PaperLab(cfg).run(once=args.once))
+                else:
+                    asyncio.run(Trader(cfg).run(once=args.once))
         elif args.command == "download":
             asyncio.run(download(args))
         elif args.command == "alpha":

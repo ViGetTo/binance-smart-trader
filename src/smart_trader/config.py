@@ -20,6 +20,7 @@ class Mode(StrEnum):
 
 @dataclass(frozen=True)
 class StrategyConfig:
+    signal_interval: str = "15m"
     scan_seconds: int = 300
     monitor_seconds: int = 5
     min_volume: float = 20_000_000
@@ -64,6 +65,8 @@ class StrategyConfig:
     excluded_symbols: list[str] = field(default_factory=list)
 
     def __post_init__(self):
+        if self.signal_interval not in {"5m", "15m"}:
+            raise ValueError("Signal interval must be 5m or 15m")
         for name in ("scan_seconds", "monitor_seconds", "breakout_bars", "volume_bars", "ema_fast", "ema_slow",
                      "ema_market", "hourly_bars", "quarter_bars", "atr_period", "consolidation_bars",
                      "top_candidates", "listing_min_hours", "listing_max_hours", "quote_max_age"):
@@ -142,7 +145,7 @@ class SelectionConfig:
 
 @dataclass(frozen=True)
 class Settings:
-    mode: Mode = Mode.DEMO
+    mode: Mode = Mode.PAPER
     db_path: str = "data/trader.sqlite"
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
@@ -154,6 +157,13 @@ class Settings:
     demo_balance_sync: bool = True
     web_enabled: bool = False
     selection: SelectionConfig = field(default_factory=SelectionConfig)
+    paper_lab: bool = False
+    market_data_enabled: bool = True
+    binance_enabled: bool = True
+    auto_update: bool = True
+    account_id: str = ""
+    account_label: str = ""
+    paper_profiles: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls):
@@ -169,14 +179,24 @@ class Settings:
         selection = dict(raw.get("selection", {}))
         if "TRADER_STRATEGY_AUTO" in env:
             selection["enabled"] = flag("TRADER_STRATEGY_AUTO", "true")
-        cfg = cls(mode=Mode(env.get("TRADER_MODE", "DEMO").upper()),
-                  db_path=env.get("TRADER_DB", "data/demo.sqlite"),
-                  strategy=StrategyConfig(**raw.get("strategy", {})), risk=RiskConfig(**raw.get("risk", {})),
+        mode = Mode(env.get("TRADER_MODE", "PAPER").upper())
+        binance_enabled = flag("BINANCE_ENABLED", "true" if mode == Mode.DEMO else "false")
+        risk = dict(raw.get("risk", {}))
+        if "PAPER_INITIAL_BALANCE" in env:
+            risk["initial_balance"] = float(env["PAPER_INITIAL_BALANCE"])
+        lab_default = "true" if env.get("TRADER_DB", "data/paper-lab.sqlite") == "data/paper-lab.sqlite" else "false"
+        cfg = cls(mode=mode,
+                  db_path=env.get("TRADER_DB", "data/paper-lab.sqlite" if mode == Mode.PAPER else "data/demo.sqlite"),
+                  strategy=StrategyConfig(**raw.get("strategy", {})), risk=RiskConfig(**risk),
                   demo_key=env.get("BINANCE_DEMO_API_KEY", ""), demo_secret=env.get("BINANCE_DEMO_API_SECRET", ""),
                   telegram_token=env.get("TELEGRAM_BOT_TOKEN", ""), telegram_chat=env.get("TELEGRAM_CHAT_ID", ""),
                   strict_demo=flag("TRADER_STRICT_DEMO", "true"),
                   demo_balance_sync=flag("TRADER_DEMO_SYNC_BALANCE", "true"),
-                  web_enabled=flag("TRADER_WEB_ENABLED", "false"), selection=SelectionConfig(**selection))
+                  web_enabled=flag("TRADER_WEB_ENABLED", "false"), selection=SelectionConfig(**selection),
+                  paper_lab=mode == Mode.PAPER and flag("TRADER_PAPER_LAB", lab_default),
+                  market_data_enabled=flag("BINANCE_MARKET_DATA_ENABLED", "true"),
+                  binance_enabled=binance_enabled, auto_update=flag("TRADER_AUTO_UPDATE", "true"),
+                  paper_profiles=raw.get("paper_profiles", {}))
         cfg.risk.validate()
         s = cfg.strategy
         if len(s.rank_weights) != 5 or abs(sum(s.rank_weights) - 1) > 1e-9 or min(s.rank_weights) < 0:

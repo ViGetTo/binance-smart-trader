@@ -68,6 +68,20 @@ def control(db, action):
     return {"message": "Новые входы остановлены. Закрытие выполняет работающий монитор.", "command": action}
 
 
+def control_all(databases, action):
+    if action == "freeze-flat":
+        for db in databases:
+            db.halt("Repair/update: freeze all accounts before checking exposure")
+        if any(unresolved(db) for db in databases):
+            raise ValueError("Есть позиции/заявки на одном из счетов. Сначала trade stop; обновление отложено")
+        for db in databases:
+            db.set("service_stop", True)
+        return {"message": "Все счета остановлены, позиции и заявки отсутствуют"}
+    if action == "resume" and any(db.get("service_stop", False) for db in databases):
+        raise ValueError("Сначала дождитесь trade stop, затем запустите trade и повторите trade resume")
+    return [control(db, action) for db in databases]
+
+
 def terminate(process):
     if process is None or process.poll() is not None:
         return
@@ -83,24 +97,27 @@ def terminate(process):
             process.wait(timeout=5)
 
 
-def supervise(root, db, *, popen=subprocess.Popen, sleep=time.sleep, stop_event=None):
+def supervise(root, db, *, popen=subprocess.Popen, sleep=time.sleep, stop_event=None, databases=None):
     bot = dashboard = None
     retry_at = 0.0
     retry_delay = 5
     dashboard_retry_at = 0.0
     environment = dict(os.environ, PYTHONUNBUFFERED="1", TZ="UTC", OPENBLAS_NUM_THREADS="1",
                        OMP_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
-    db.set("service_pid", os.getpid())
-    print("Binance Smart Trader: Demo · терминал trade ui · веб-панель по команде trade web", flush=True)
+    databases = databases or [db]
+    for ledger in databases:
+        ledger.set("service_pid", os.getpid())
+    print("Smart Trader: виртуальные счета · терминал trade ui · утренний отчёт trade report", flush=True)
     try:
         while True:
             if stop_event is not None and stop_event.is_set():
-                control(db, "stop")
+                control_all(databases, "stop")
                 stop_event.clear()
                 print("Получен сигнал остановки; монитор продолжает работу до закрытия.", flush=True)
             now = time.time()
-            db.set("service_heartbeat", now)
-            if db.get("service_stop", False) and not unresolved(db):
+            for ledger in databases:
+                ledger.set("service_heartbeat", now)
+            if db.get("service_stop", False) and not any(unresolved(ledger) for ledger in databases):
                 # No position, unresolved buy, or protective order intent may be abandoned.
                 print("Все позиции и intents закрыты. Останавливаю процессы.", flush=True)
                 break
@@ -133,8 +150,9 @@ def supervise(root, db, *, popen=subprocess.Popen, sleep=time.sleep, stop_event=
         # Signal handlers request a flatten and keep the loop alive until it is confirmed.
         terminate(bot)
         terminate(dashboard)
-        db.set("service_pid", None)
-        db.set("service_heartbeat", 0)
+        for ledger in databases:
+            ledger.set("service_pid", None)
+            ledger.set("service_heartbeat", 0)
 
 
 def main():
@@ -147,13 +165,17 @@ def main():
     if settings.mode == Mode.BACKTEST and args.action == "run":
         parser.error("trade запускает PAPER/DEMO; для BACKTEST используйте smart-trader backtest")
     db = Database(settings.db_path, settings.risk.initial_balance)
+    from .lab import open_accounts
+    accounts = open_accounts(settings) if settings.paper_lab else []
+    databases = [db, *(ledger for _, ledger in accounts)]
     if db.get("mode") is None:
         db.set("mode", settings.mode.value)
     if db.get("web_enabled") is None:
         db.set("web_enabled", settings.web_enabled)
     try:
         if args.action != "run":
-            print(json.dumps(control(db, args.action), ensure_ascii=False, indent=2))
+            print(json.dumps(control_all(databases, args.action) if accounts else control(db, args.action),
+                             ensure_ascii=False, indent=2))
             return
         with ProcessLock(settings.db_path+".service.lock"):
             event = threading.Event()
@@ -162,11 +184,13 @@ def main():
                 event.set()
             signal.signal(signal.SIGINT, stop_requested)
             signal.signal(signal.SIGTERM, stop_requested)
-            supervise(root, db, stop_event=event)
+            supervise(root, db, stop_event=event, databases=databases)
     except (ValueError, OSError) as exc:
         print(f"Service error: {type(exc).__name__}: {exc}", file=sys.stderr)
         sys.exit(2)
     finally:
+        for _, ledger in accounts:
+            ledger.close()
         db.close()
 
 

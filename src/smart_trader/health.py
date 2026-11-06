@@ -27,13 +27,17 @@ def health_state(db, now=None):
     worker = db.get("heartbeat", 0)
     worker_age = now-worker if worker else None
     alive = service_process_alive(db.get("service_pid"))
-    ready = alive and service_age < 30 and worker_age is not None and worker_age < 30
+    quotes = (db.get("market_data_enabled", True) and db.get("rest_status", {}).get("ok", False)
+              and not db.get("scan_data_paused", False) and not db.get("monitor_data_paused", False))
+    ready = alive and service_age < 30 and worker_age is not None and worker_age < 30 and quotes
     return {"service_process_alive": alive, "service_fresh": service_age < 30,
             "trader_fresh": worker_age is not None and worker_age < 30,
-            "ready": ready, "service_age": round(service_age, 1) if db.get("service_heartbeat") else None,
+            "ready": ready, "market_data_ready": quotes,
+            "service_age": round(service_age, 1) if db.get("service_heartbeat") else None,
             "trader_age": round(worker_age, 1) if worker_age is not None else None,
             "message": "Соединение и heartbeat активны" if ready else
                        "PID не работает: сервис завершён. Запустите trade" if not alive else
+                       "Нет актуальных котировок или источник OFF; входы ожидают данные" if not quotes else
                        "Heartbeat устарел: возможна приостановка Android или зависание. trade doctor"}
 
 

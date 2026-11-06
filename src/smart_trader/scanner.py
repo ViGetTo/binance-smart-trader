@@ -54,7 +54,8 @@ class Scanner:
                     minimum = self.cfg.listing_min_volume if listing else self.cfg.min_volume
                     if float(ticker.get("quoteVolume", 0)) < minimum:
                         raise Rejected("24h quote volume too low")
-                    bars = await self.market.candles(symbol, "15m", self.cfg.quarter_bars)
+                    interval = "15m" if listing else self.cfg.signal_interval
+                    bars = await self.market.candles(symbol, interval, self.cfg.quarter_bars)
                     value = quality(bars, self.cfg)
                     # New listings do not require EMA50/200 history.
                     hourly = await self.market.candles(symbol, "1h", self.cfg.hourly_bars)

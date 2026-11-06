@@ -36,7 +36,7 @@ def frame(count=240, step=3_600_000, trend=True, end=None):
 
 @pytest.fixture
 def cfg(tmp_path):
-    # Explicit research fixture; real defaults require verified Demo credentials/balance.
+    # Single-account fixture; three-account PAPER defaults are exercised separately.
     return Settings(mode=Mode.PAPER, db_path=str(tmp_path/"trader.sqlite"), strict_demo=False, demo_balance_sync=False)
 
 

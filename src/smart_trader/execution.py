@@ -112,6 +112,10 @@ class Execution:
                 plan = self.risk.approve(signal, rules, book, venue, histories,
                                          reference=reference, base_position=base_position)
             with self.db.transaction():
+                current = self.risk.approve(signal, rules, book, venue, histories,
+                                            reference=reference, base_position=base_position)
+                if current.qty < plan.qty or current.risk < plan.risk:
+                    raise Rejected("Risk changed before durable intent; no order created")
                 self.db.execute("INSERT INTO intents VALUES(?,?,?,?,?,?,?)",
                                 (signal.key, signal.symbol, signal.strategy, venue, "ENTERING", encode(asdict(plan)), time.time()))
             if venue == "PAPER":
@@ -457,11 +461,16 @@ class Execution:
             for p in self.db.positions():
                 try:
                     await self._monitor_position(p, flatten)
+                except (APIError, Rejected) as exc:
+                    failed = True
+                    self.db.set("monitor_data_paused", True)
+                    self.db.event("CONNECTION", f"{p['symbol']}: no fresh book ({type(exc).__name__}); retrying", True)
                 except Exception as exc:
                     failed = True
                     self.db.halt(f"{p['symbol']} monitor {type(exc).__name__}; other positions still monitored")
             if failed:
                 raise Uncertain("Position marks/management incomplete; no fresh equity asserted")
+            self.db.set("monitor_data_paused", False)
             # Exits can change cash during the loop.
             equity = dec(self.db.get("cash"))+sum((dec(p["qty"])*dec(p.get("mark", p["entry"]))
                                                    for p in self.db.positions()), Decimal(0))

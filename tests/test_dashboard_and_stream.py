@@ -15,6 +15,7 @@ def test_streamlit_renders_and_kill_is_persistent(tmp_path, monkeypatch):
     path = str(tmp_path/"dashboard.sqlite")
     monkeypatch.setenv("TRADER_DB", path)
     monkeypatch.setenv("TRADER_MODE", "PAPER")
+    monkeypatch.setenv("TRADER_PAPER_LAB", "false")
     app = AppTest.from_file(Path(__file__).parents[1]/"dashboard.py", default_timeout=15).run()
     assert not app.exception
     assert app.title[0].value == "Binance Smart Trader"

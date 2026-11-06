@@ -9,6 +9,7 @@ import streamlit as st
 from smart_trader.analytics import database_report
 from smart_trader.config import RiskConfig, Settings
 from smart_trader.db import Database
+from smart_trader.lab import comparison, open_accounts
 
 st.set_page_config(page_title="Binance Smart Trader — virtual only", layout="wide")
 settings = Settings.load()
@@ -16,7 +17,16 @@ settings = Settings.load()
 
 @st.fragment(run_every=timedelta(seconds=5))
 def panel():
-    db = Database(settings.db_path, settings.risk.initial_balance)
+    accounts = open_accounts(settings) if settings.paper_lab else []
+    selected = settings
+    if accounts:
+        st.subheader("Три PAPER-счёта")
+        st.dataframe(pd.DataFrame([{k: r[k] for k in ("name", "equity", "net_pnl", "return_pct", "positions",
+                                                    "fees_total", "slippage_total", "risk_pct", "interval")}
+                                   for r in comparison(accounts)]), width="stretch")
+        name = st.selectbox("Счёт для подробной аналитики и управления", [cfg.account_label for cfg, _ in accounts])
+        selected = next(cfg for cfg, _ in accounts if cfg.account_label == name)
+    db = Database(selected.db_path, selected.risk.initial_balance)
     try:
         st.title("Binance Smart Trader")
         mode = db.get("mode", settings.mode.value)
@@ -95,14 +105,16 @@ def panel():
         st.info(f"Форвард-наблюдение: {days:.1f} дней. Ориентир: 30–60 дней и достаточное число сделок. "
                 "Малая выборка не подтверждает прибыльность. NULL означает, что метрика не определена.")
         with st.expander("Настройки риска"):
-            current = db.get("risk_overrides", asdict(settings.risk))
+            current = db.get("risk_overrides", asdict(selected.risk))
             with st.form("risk"):
-                risk_pct = st.number_input("Риск momentum, %", .01, .5, min(float(current["trade_risk"])*100, .5), .01)
+                risk_pct = st.number_input("Риск momentum, %", .01, selected.risk.trade_risk*100,
+                                           min(float(current["trade_risk"])*100, selected.risk.trade_risk*100), .01)
                 listing_pct = st.number_input("Риск новых листингов, %", .01, .2, float(current["listing_risk"])*100, .01)
-                exposure = st.number_input("Суммарная стоимость позиций, %", 1., 25., min(float(current["max_exposure"])*100, 25.), 1.)
+                exposure = st.number_input("Суммарная стоимость позиций, %", 1., selected.risk.max_exposure*100,
+                                           min(float(current["max_exposure"])*100, selected.risk.max_exposure*100), 1.)
                 positions = st.number_input("Максимум позиций", 1, 3, int(current["max_positions"]))
-                daily = st.number_input("Дневной лимит потерь, %", .1, 5., float(current["daily_loss"])*100, .1)
-                weekly = st.number_input("Недельный лимит потерь, %", .1, 10., float(current["weekly_loss"])*100, .1)
+                daily = st.number_input("Дневной лимит потерь, %", .1, max(5., selected.risk.daily_loss*100), float(current["daily_loss"])*100, .1)
+                weekly = st.number_input("Недельный лимит потерь, %", .1, max(10., selected.risk.weekly_loss*100), float(current["weekly_loss"])*100, .1)
                 if st.form_submit_button("Сохранить"):
                     current.update(trade_risk=risk_pct/100, listing_risk=listing_pct/100,
                                    max_exposure=exposure/100, max_positions=positions,
@@ -114,6 +126,8 @@ def panel():
             st.dataframe(pd.DataFrame(db.rows("SELECT * FROM events ORDER BY id DESC LIMIT 200")), width="stretch")
     finally:
         db.close()
+        for _, ledger in accounts:
+            ledger.close()
 
 
 panel()

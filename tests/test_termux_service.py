@@ -150,6 +150,7 @@ if name == 'proot-distro':
     elif '/bin/true' in args: sys.exit(1)
     elif args[-1:] == ['freeze-flat'] and os.environ.get('TRADER_TEST_REFUSE_FREEZE') == '1': sys.exit(2)
     elif args[-1:] == ['stop']: session.unlink(missing_ok=True)
+    elif 'smart_trader.updates' in args: sys.exit(int(os.environ.get('TRADER_TEST_UPDATE_EXIT', '0')))
 '''
     for command in ("pkg", "proot-distro", "tmux", "termux-wake-lock", "termux-wake-unlock", "sleep"):
         executable = commands/command
@@ -187,6 +188,10 @@ def test_trade_starts_once_and_quotes_project_path(termux):
     entries = calls(termux)
     launches = [args for name, args in entries if name == "tmux" and args[0] == "new-session"]
     assert len(launches) == 1
+    update_index = next(i for i, (name, args) in enumerate(entries) if 'smart_trader.updates' in args)
+    ensure_index = next(i for i, (name, args) in enumerate(entries) if args[-1:] == ['ensure-config'])
+    assert update_index < ensure_index
+    assert any('--busy' in args for _, args in entries if 'smart_trader.updates' in args)
     # Execute tmux's actual shell string against the mocked proot command.
     result = subprocess.run(["bash", "-c", launches[0][-1]], env=termux[1], cwd=termux[0], timeout=10)
     assert result.returncode == 0
@@ -224,3 +229,18 @@ def test_update_and_repair_never_kill_session_when_flat_check_fails(termux, inst
     result = shell(termux, "termux-install.sh") if installer else shell(termux, "trade-termux.sh", "repair")
     assert result.returncode != 0
     assert not any(name == "tmux" and args[0] == "kill-session" for name, args in calls(termux))
+
+
+def test_failed_update_install_prevents_new_service(termux):
+    termux[1]["TRADER_TEST_UPDATE_EXIT"] = "3"
+    result = shell(termux, "trade-termux.sh")
+    assert result.returncode == 3
+    assert not any(name == "tmux" and args[0] == "new-session" for name, args in calls(termux))
+
+
+def test_updated_launcher_is_reloaded_before_start(termux):
+    termux[1]["TRADER_TEST_UPDATE_EXIT"] = "10"
+    result = shell(termux, "trade-termux.sh")
+    assert result.returncode == 0, result.stderr
+    assert sum("smart_trader.updates" in args for _, args in calls(termux)) == 1
+    assert Path(termux[1]["PREFIX"], "bin/trade").exists()

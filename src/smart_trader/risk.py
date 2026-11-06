@@ -67,13 +67,17 @@ class RiskManager:
         now = time.time() if now is None else now
         if self.db.get("kill", False):
             raise Rejected("Kill switch is active")
+        if (not self.settings.market_data_enabled or self.db.get("scan_data_paused", False)
+                or self.db.get("monitor_data_paused", False)):
+            raise Rejected("Market data unavailable: entries paused")
         if now < self.db.get("pause_until", 0):
             raise Rejected("Consecutive losses cooldown")
         if now-book.received > c.quote_max_age or book.received-now > 5:
             raise Rejected("Stale book")
         if not s.stop < s.entry < s.target or s.atr <= 0:
             raise ValueError("Malformed strategy signal")
-        if now*1000-s.candle_ms > 900_000+30_000 or s.candle_ms > now*1000:
+        interval_ms = 900_000 if s.strategy == "new_listings" or c.signal_interval == "15m" else 300_000
+        if now*1000-s.candle_ms > interval_ms+30_000 or s.candle_ms > now*1000:
             raise Rejected("Stale/future signal")
         positions = self.db.positions()
         if any(p["symbol"] == s.symbol for p in positions):
@@ -156,4 +160,4 @@ class RiskManager:
         if streak >= cfg.consecutive_losses:
             self.db.set("pause_until", now+cfg.pause_hours*3600)
             self.db.set("loss_streak", 0)
-            self.db.event("RISK", "Three losses: entries paused", True)
+            self.db.event("RISK", f"Consecutive losses ({cfg.consecutive_losses}): entries paused {cfg.pause_hours}h", True)

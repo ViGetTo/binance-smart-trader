@@ -38,7 +38,7 @@ async def test_new_listing_fallback_is_labelled_paper(db, cfg, risk, signal):
     assert any("explicit PAPER" in e["message"] for e in db.rows("SELECT * FROM events"))
 
 
-async def test_stale_exit_quote_halts_without_fake_execution(db, cfg, risk, signal):
+async def test_stale_exit_quote_pauses_without_fake_execution(db, cfg, risk, signal):
     from dataclasses import replace
     market = FakeMarket()
     execution = Execution(db, cfg, risk, market)
@@ -47,7 +47,7 @@ async def test_stale_exit_quote_halts_without_fake_execution(db, cfg, risk, sign
     from smart_trader.models import Uncertain
     with pytest.raises(Uncertain):
         await execution.monitor()
-    assert db.get("kill")
+    assert db.get("monitor_data_paused")
     assert db.positions()
     assert not db.rows("SELECT * FROM trades")
 
