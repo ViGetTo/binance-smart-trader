@@ -1,0 +1,97 @@
+{
+  "source": "SYNTHETIC FIXTURE ONLY",
+  "report": {
+    "trades": 1,
+    "net_pnl": -49.93080384043424,
+    "realized_pnl": -49.930803840435,
+    "win_rate": 0.0,
+    "profit_factor": 0.0,
+    "max_drawdown": 0.004993080384043447,
+    "sharpe_daily_365": null,
+    "expectancy_r": -0.9986591358947965,
+    "average_win": null,
+    "average_loss": -49.930803840435,
+    "fees": 1.369159275435,
+    "slippage": 0.72850822275,
+    "costs_pct_capital": 0.02097667498185,
+    "costs_pct_gross_absolute_result": 4.385385652272554,
+    "evidence": "INSUFFICIENT",
+    "start_ms": 1704790800000,
+    "end_ms": 1705057200000,
+    "by_strategy": {
+      "momentum": {
+        "trades": 1,
+        "net_pnl": -49.93080384043424,
+        "realized_pnl": -49.930803840435,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "max_drawdown": 0.004993080384043447,
+        "sharpe_daily_365": null,
+        "expectancy_r": -0.9986591358947965,
+        "average_win": null,
+        "average_loss": -49.930803840435,
+        "fees": 1.369159275435,
+        "slippage": 0.72850822275,
+        "costs_pct_capital": 0.02097667498185,
+        "costs_pct_gross_absolute_result": 4.385385652272554,
+        "evidence": "INSUFFICIENT",
+        "equity_basis": "Initial portfolio budget + attributed realized and marked strategy PnL; shared limits"
+      },
+      "new_listings": {
+        "trades": 0,
+        "net_pnl": 0.0,
+        "realized_pnl": 0.0,
+        "win_rate": null,
+        "profit_factor": null,
+        "max_drawdown": -0.0,
+        "sharpe_daily_365": null,
+        "expectancy_r": null,
+        "average_win": null,
+        "average_loss": null,
+        "fees": 0,
+        "slippage": 0,
+        "costs_pct_capital": 0.0,
+        "costs_pct_gross_absolute_result": null,
+        "evidence": "INSUFFICIENT",
+        "equity_basis": "Initial portfolio budget + attributed realized and marked strategy PnL; shared limits"
+      }
+    },
+    "warnings": [
+      "MODELLED spread/depth, historical executions are not observed",
+      "Coverage limited to supplied universe; include delisted symbols to reduce survivorship bias",
+      "No OHLCV reconstruction of order queues, outages, halts, or extreme gap execution",
+      "At data end positions assume liquidation at last observable close; delisting may be worse",
+      "Require 30–60 days forward PAPER/DEMO and sufficient trades; no profitability claim",
+      "SYNTHETIC FIXTURE — NOT BINANCE DATA, NOT PROFITABILITY EVIDENCE"
+    ],
+    "benchmarks": {
+      "btc_buy_hold_net_pnl": 111.39707400019324,
+      "btc_ema20_50_net_pnl": 111.39707400019324,
+      "cash_net_pnl": 0.0,
+      "note": "Same evaluation window, 100% allocation, explicit fees/slippage; exposure differs from strategy"
+    }
+  },
+  "trades": [
+    {
+      "id": "7e6b8be2d259ecacaab770c9",
+      "symbol": "ETHUSDT",
+      "strategy": "momentum",
+      "venue": "BACKTEST",
+      "qty": "6.671",
+      "entry": "106.26",
+      "cost": "709.56932046",
+      "entry_fee": "0.70886046",
+      "stop": "99.03",
+      "target": "124.32",
+      "risk": "49.997844155",
+      "slippage": "0.72850822275",
+      "opened_ms": 1704806100000,
+      "mark": "106.195",
+      "pnl": "-49.930803840435",
+      "r_multiple": "-0.9986591358947964623495874809",
+      "fees": "1.369159275435",
+      "closed_ms": 1704806999999,
+      "exit_reason": "stop_first"
+    }
+  ]
+}
